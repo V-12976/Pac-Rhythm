@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pac-Rhythm</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-bar">
+        <div class="brand">
+          <div class="brand-mark"></div>
+          <div>
+            <div class="app-title">Pac-Rhythm</div>
+            <div class="app-subtitle">轨道闪避节奏</div>
+          </div>
+        </div>
+        <nav class="app-nav">
+          <button class="nav-button active" data-view="homeView">首页</button>
+          <button class="nav-button" data-view="gameSetupView">开始游戏</button>
+          <button class="nav-button" data-view="editorView">编辑器</button>
+        </nav>
+      </header>
+
+      <main class="views">
+        <section class="view active" id="homeView">
+          <div class="hero-card">
+            <div class="hero-copy">
+              <div class="hero-title">沉浸式轨道闪避节奏对决</div>
+              <div class="hero-subtitle">
+                以吃豆人为主题，三轨道闪避、强化道具与连击计分
+              </div>
+              <div class="hero-actions">
+                <button class="filled-button" id="primaryStart">开始游戏</button>
+                <button class="tonal-button" id="primaryEditor">进入编辑器</button>
+              </div>
+            </div>
+            <div class="hero-visual">
+              <div class="hero-ring"></div>
+              <div class="hero-ring second"></div>
+              <div class="hero-pacman"></div>
+            </div>
+          </div>
+          <div class="feature-grid">
+            <div class="feature-card">
+              <div class="feature-title">三轨闪避</div>
+              <div class="feature-text">W/S/X 逐轨移动，避免幽灵撞击</div>
+            </div>
+            <div class="feature-card">
+              <div class="feature-title">大力丸强化</div>
+              <div class="feature-text">10 秒内可反吃幽灵，连击加成翻倍</div>
+            </div>
+            <div class="feature-card">
+              <div class="feature-title">本地谱面</div>
+              <div class="feature-text">内置编辑器，保存曲目随时演奏</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="gameSetupView">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">选择曲目</div>
+                <div class="card-subtitle">从已保存的谱面中开始对决</div>
+              </div>
+              <button class="tonal-button" id="openEditorFromSetup">创建新曲目</button>
+            </div>
+            <div class="song-list" id="songList"></div>
+          </div>
+          <div class="card game-launch">
+            <div>
+              <div class="card-title" id="selectedSongTitle">未选择曲目</div>
+              <div class="card-subtitle" id="selectedSongMeta">请选择一个谱面</div>
+            </div>
+            <button class="filled-button" id="launchGameButton" disabled>开始演奏</button>
+          </div>
+        </section>
+
+        <section class="view" id="gameView">
+          <div class="card game-card">
+            <div class="game-header">
+              <div>
+                <div class="card-title" id="playingTitle">演奏中</div>
+                <div class="card-subtitle" id="playingMeta">节奏准备</div>
+              </div>
+              <div class="status-chip" id="statusText">按空格开始</div>
+            </div>
+            <div class="pose-panel">
+              <div class="pose-card">
+                <div class="pose-header">
+                  <div>
+                    <div class="card-title">体感控制</div>
+                    <div class="card-subtitle">双手上 / 平 / 下 控制轨道</div>
+                  </div>
+                  <div class="pose-controls">
+                    <select id="cameraSelect"></select>
+                    <button class="outlined-button" id="refreshCameraButton">刷新</button>
+                  </div>
+                </div>
+                <div class="pose-preview">
+                  <video id="poseVideo" playsinline></video>
+                  <canvas id="poseCanvas"></canvas>
+                </div>
+              </div>
+            </div>
+            <div class="stage">
+              <canvas id="gameCanvas" width="960" height="360"></canvas>
+              <div class="hud">
+                <div class="hud-item">分数 <span id="scoreValue">0</span></div>
+                <div class="hud-item">连击 <span id="comboValue">0</span></div>
+                <div class="hud-item">豆子 <span id="pelletValue">0</span></div>
+                <div class="hud-item">生命 <span id="lifeValue">❤❤❤</span></div>
+                <div class="hud-item">强化 <span id="powerValue">无</span></div>
+              </div>
+              <div class="controls">
+                <button class="filled-button" id="startButton">开始</button>
+                <button class="outlined-button" id="pauseButton">暂停</button>
+                <button class="text-button" id="resetButton">重置</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="editorView">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">谱面编辑器</div>
+                <div class="card-subtitle">创建与保存专属节奏轨道</div>
+              </div>
+              <div class="editor-actions">
+                <input id="songNameInput" placeholder="曲目名称" />
+                <button class="filled-button" id="saveSongButton">保存曲目</button>
+                <label class="file-input">
+                  <span>音频</span>
+                  <input id="audioInput" type="file" accept="audio/*" />
+                </label>
+                <div class="audio-name" id="audioName">未选择音频</div>
+              </div>
+            </div>
+            <div class="editor-toolbar">
+              <label class="tool">
+                BPM
+                <input id="bpmInput" type="number" min="60" max="200" value="120" />
+              </label>
+              <button class="outlined-button" id="autoBpmButton">自动计算</button>
+              <div class="tool-group">
+                <button class="tool-button active" data-tool="pellet">豆子</button>
+                <button class="tool-button" data-tool="power">大力丸</button>
+                <button class="tool-button" data-tool="ghost">幽灵</button>
+                <button class="tool-button" data-tool="erase">擦除</button>
+              </div>
+              <div class="tool-group">
+                <select id="songSelect"></select>
+                <button class="outlined-button" id="loadSongButton">载入</button>
+                <button class="text-button" id="newSongButton">新建</button>
+                <button class="text-button" id="deleteSongButton">删除</button>
+              </div>
+            </div>
+            <div class="recorder-panel">
+              <div class="recorder-header">
+                <div>
+                  <div class="card-title">录制路径</div>
+                  <div class="card-subtitle">按 S 开始/停止录制，红线记录移动轨迹</div>
+                </div>
+                <div class="recorder-actions">
+                  <button class="filled-button" id="recordButton">开始录制</button>
+                  <button class="outlined-button" id="stopRecordButton">停止录制</button>
+                </div>
+              </div>
+              <div class="timeline-container">
+                <canvas id="recordCanvas" height="220"></canvas>
+              </div>
+            </div>
+            <div class="editor-panel">
+              <div class="card-title">谱面时间轴</div>
+              <div class="card-subtitle">点击放置豆子/大力丸/幽灵，按工具切换</div>
+              <div class="timeline-container">
+                <canvas id="editorCanvas" height="220"></canvas>
+              </div>
+            </div>
+            <div class="panel-footer">
+              <button class="tonal-button" id="clearButton">清空</button>
+              <button class="tonal-button" id="exportButton">导出</button>
+              <button class="tonal-button" id="importButton">导入</button>
+              <span class="hint">W 上轨道 / S 中轨道 / X 下轨道（相邻移动）</span>
+            </div>
+            <textarea id="chartArea" spellcheck="false"></textarea>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./main.js"></script>
+  </body>
+</html>
