@@ -100,6 +100,11 @@
                   </div>
                   <div class="pose-controls">
                     <select id="cameraSelect"></select>
+                  <label class="toggle">
+                    <input type="checkbox" id="gestureStartToggle" />
+                    <span>手势启动</span>
+                  </label>
+                  <div class="pose-status" id="poseStatus">手势：关闭</div>
                     <button class="outlined-button" id="refreshCameraButton">刷新</button>
                   </div>
                 </div>
@@ -124,6 +129,17 @@
                 <button class="text-button" id="resetButton">重置</button>
               </div>
             </div>
+            <div class="modal hidden" id="gameOverModal">
+              <div class="modal-card">
+                <div class="card-title" id="gameOverTitle">对决结束</div>
+                <div class="card-subtitle" id="gameOverReason">原因</div>
+                <div class="modal-score">最终得分：<span id="gameOverScore">0</span></div>
+                <div class="modal-actions">
+                  <button class="filled-button" id="restartButton">重新开始</button>
+                  <button class="outlined-button" id="backToEditorButton">返回编辑器</button>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -136,7 +152,6 @@
               </div>
               <div class="editor-actions">
                 <input id="songNameInput" placeholder="曲目名称" />
-                <button class="filled-button" id="saveSongButton">保存曲目</button>
                 <label class="file-input">
                   <span>音频</span>
                   <input id="audioInput" type="file" accept="audio/*" />
@@ -145,22 +160,34 @@
               </div>
             </div>
             <div class="editor-toolbar">
-              <label class="tool">
-                BPM
-                <input id="bpmInput" type="number" min="60" max="200" value="120" />
-              </label>
-              <button class="outlined-button" id="autoBpmButton">自动计算</button>
-              <div class="tool-group">
-                <button class="tool-button active" data-tool="pellet">豆子</button>
-                <button class="tool-button" data-tool="power">大力丸</button>
-                <button class="tool-button" data-tool="ghost">幽灵</button>
-                <button class="tool-button" data-tool="erase">擦除</button>
-              </div>
-              <div class="tool-group">
+              <div class="toolbar-group">
+                <div class="group-label">文件</div>
+                <button class="outlined-button" id="newSongButton">新建</button>
+                <button class="filled-button" id="saveSongButton">保存</button>
                 <select id="songSelect"></select>
-                <button class="outlined-button" id="loadSongButton">载入</button>
-                <button class="text-button" id="newSongButton">新建</button>
-                <button class="text-button" id="deleteSongButton">删除</button>
+                <button class="outlined-button" id="loadSongButton">加载</button>
+              </div>
+              <div class="toolbar-group">
+                <div class="group-label">播放</div>
+                <button class="outlined-button" id="playAudioButton">播放</button>
+                <button class="text-button" id="stopAudioButton">停止</button>
+              </div>
+              <div class="toolbar-group">
+                <div class="group-label">BPM</div>
+                <label class="tool">
+                  BPM
+                  <input id="bpmInput" type="number" min="60" max="200" value="120" />
+                </label>
+                <div class="bpm-status" id="bpmStatus">等待音频</div>
+              </div>
+              <div class="toolbar-group">
+                <div class="group-label">工具</div>
+                <select id="toolSelect">
+                  <option value="pellet">豆子</option>
+                  <option value="power">大力丸</option>
+                  <option value="ghost">幽灵</option>
+                  <option value="erase">擦除</option>
+                </select>
               </div>
             </div>
             <div class="recorder-panel">
@@ -168,10 +195,6 @@
                 <div>
                   <div class="card-title">录制路径</div>
                   <div class="card-subtitle">按 S 开始/停止录制，红线记录移动轨迹</div>
-                </div>
-                <div class="recorder-actions">
-                  <button class="filled-button" id="recordButton">开始录制</button>
-                  <button class="outlined-button" id="stopRecordButton">停止录制</button>
                 </div>
               </div>
               <div class="timeline-container">
@@ -186,9 +209,6 @@
               </div>
             </div>
             <div class="panel-footer">
-              <button class="tonal-button" id="clearButton">清空</button>
-              <button class="tonal-button" id="exportButton">导出</button>
-              <button class="tonal-button" id="importButton">导入</button>
               <span class="hint">W 上轨道 / S 中轨道 / X 下轨道（相邻移动）</span>
             </div>
             <textarea id="chartArea" spellcheck="false"></textarea>

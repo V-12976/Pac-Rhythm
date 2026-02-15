@@ -99,20 +99,14 @@ body {
 }
 
 .view {
-  opacity: 0;
-  transform: translateY(12px);
-  pointer-events: none;
-  transition: opacity 0.3s ease, transform 0.3s ease;
-  display: flex;
+  display: none;
   flex-direction: column;
   gap: 16px;
   align-items: stretch;
 }
 
 .view.active {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
+  display: flex;
 }
 
 .card {
@@ -372,6 +366,25 @@ body {
   flex-wrap: wrap;
 }
 
+.pose-status {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  padding: 6px 10px;
+  background: #0b1020;
+  border-radius: 999px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  background: #0b1020;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
 .pose-controls select {
   background: var(--surface-variant);
   border: 1px solid var(--outline);
@@ -402,6 +415,46 @@ body {
 
 .pose-preview video {
   opacity: 0;
+}
+
+.pose-preview canvas {
+  cursor: ns-resize;
+}
+
+.modal {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 10, 22, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.modal-card {
+  background: var(--surface-container);
+  border-radius: 20px;
+  padding: 24px;
+  min-width: 280px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-score {
+  font-size: 14px;
+  color: var(--on-surface-variant);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .status-chip {
@@ -498,6 +551,39 @@ body {
   align-items: center;
   flex-wrap: wrap;
   margin-bottom: 12px;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: #0b1020;
+  border-radius: 14px;
+}
+
+.group-label {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  margin-right: 4px;
+}
+
+.bpm-status {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-variant);
+}
+
+.toolbar-group select {
+  background: var(--surface-variant);
+  border: 1px solid var(--outline);
+  color: var(--on-surface);
+  padding: 8px 12px;
+  border-radius: 12px;
+  min-width: 160px;
 }
 
 .tool {

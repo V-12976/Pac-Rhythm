@@ -12,15 +12,11 @@ const pauseButton = document.getElementById("pauseButton")
 const resetButton = document.getElementById("resetButton")
 const bpmInput = document.getElementById("bpmInput")
 const chartArea = document.getElementById("chartArea")
-const clearButton = document.getElementById("clearButton")
-const exportButton = document.getElementById("exportButton")
-const importButton = document.getElementById("importButton")
 const songNameInput = document.getElementById("songNameInput")
 const saveSongButton = document.getElementById("saveSongButton")
 const songSelect = document.getElementById("songSelect")
 const loadSongButton = document.getElementById("loadSongButton")
 const newSongButton = document.getElementById("newSongButton")
-const deleteSongButton = document.getElementById("deleteSongButton")
 const songList = document.getElementById("songList")
 const launchGameButton = document.getElementById("launchGameButton")
 const selectedSongTitle = document.getElementById("selectedSongTitle")
@@ -30,17 +26,26 @@ const playingMeta = document.getElementById("playingMeta")
 const primaryStart = document.getElementById("primaryStart")
 const primaryEditor = document.getElementById("primaryEditor")
 const openEditorFromSetup = document.getElementById("openEditorFromSetup")
-const autoBpmButton = document.getElementById("autoBpmButton")
-const recordButton = document.getElementById("recordButton")
-const stopRecordButton = document.getElementById("stopRecordButton")
+const playAudioButton = document.getElementById("playAudioButton")
+const stopAudioButton = document.getElementById("stopAudioButton")
+const toolSelect = document.getElementById("toolSelect")
+const bpmStatus = document.getElementById("bpmStatus")
 const recordCanvas = document.getElementById("recordCanvas")
 const editorCanvas = document.getElementById("editorCanvas")
 const audioInput = document.getElementById("audioInput")
 const audioName = document.getElementById("audioName")
 const cameraSelect = document.getElementById("cameraSelect")
+const gestureStartToggle = document.getElementById("gestureStartToggle")
+const poseStatus = document.getElementById("poseStatus")
 const refreshCameraButton = document.getElementById("refreshCameraButton")
 const poseVideo = document.getElementById("poseVideo")
 const poseCanvas = document.getElementById("poseCanvas")
+const gameOverModal = document.getElementById("gameOverModal")
+const gameOverTitle = document.getElementById("gameOverTitle")
+const gameOverReason = document.getElementById("gameOverReason")
+const gameOverScore = document.getElementById("gameOverScore")
+const restartButton = document.getElementById("restartButton")
+const backToEditorButton = document.getElementById("backToEditorButton")
 
 const lanes = 3
 const pacmanX = 160
@@ -54,6 +59,7 @@ const powerDuration = 10000
 const storageKey = "poserhythmSongs"
 const dbName = "pac-rhythm-db"
 const storeName = "songs"
+const isFileProtocol = location.protocol === "file:"
 const timelinePadding = 70
 const timelineLaneHeight = 60
 const timelineTop = 40
@@ -92,6 +98,13 @@ let poseStream
 let poseLane = 1
 let poseCandidateLane = null
 let poseCandidateAt = 0
+let gestureStartEnabled = false
+let gestureHoldStart = 0
+let gestureHoldSeconds = 0
+let poseLineTop = 0.35
+let poseLineBottom = 0.65
+let poseDragging = null
+let lastPoseSendAt = 0
 
 let audioContext
 let audioBuffer = null
@@ -145,6 +158,7 @@ function setupPose() {
   pose.onResults(onPoseResults)
 }
 
+// 摄像头枚举与选择，支持多设备切换
 async function enumerateCameras() {
   if (!navigator.mediaDevices?.enumerateDevices) return
   const devices = await navigator.mediaDevices.enumerateDevices()
@@ -161,6 +175,7 @@ async function enumerateCameras() {
   }
 }
 
+// 绑定指定摄像头到 MediaPipe 处理链
 async function startPoseCamera(deviceId) {
   if (!navigator.mediaDevices?.getUserMedia || !pose) return
   if (poseStream) {
@@ -173,8 +188,12 @@ async function startPoseCamera(deviceId) {
   if (poseCamera) {
     poseCamera.stop()
   }
+  lastPoseSendAt = 0
   poseCamera = new Camera(poseVideo, {
     onFrame: async () => {
+      const now = performance.now()
+      if (now - lastPoseSendAt < 33) return
+      lastPoseSendAt = now
       await pose.send({ image: poseVideo })
     },
     width: 640,
@@ -183,33 +202,23 @@ async function startPoseCamera(deviceId) {
   poseCamera.start()
 }
 
+// 轨道判定：手腕相对肩/髋的位置决定上/中/下
 function determinePoseLane(landmarks) {
   const leftWrist = landmarks[15]
   const rightWrist = landmarks[16]
   const leftShoulder = landmarks[11]
   const rightShoulder = landmarks[12]
-  const leftHip = landmarks[23]
-  const rightHip = landmarks[24]
   if (
     leftWrist.visibility < 0.5 ||
     rightWrist.visibility < 0.5 ||
     leftShoulder.visibility < 0.4 ||
-    rightShoulder.visibility < 0.4 ||
-    leftHip.visibility < 0.4 ||
-    rightHip.visibility < 0.4
+    rightShoulder.visibility < 0.4
   ) {
     return null
   }
   const wristY = (leftWrist.y + rightWrist.y) * 0.5
-  const shoulderY = (leftShoulder.y + rightShoulder.y) * 0.5
-  const hipY = (leftHip.y + rightHip.y) * 0.5
-  const torso = Math.max(0.001, hipY - shoulderY)
-  const wristSpread = Math.abs(leftWrist.x - rightWrist.x)
-  const relative = (wristY - shoulderY) / torso
-  if (relative < -0.18) return 0
-  if (relative > 0.55) return 2
-  if (wristSpread > 0.32 && relative > -0.15 && relative < 0.45) return 1
-  if (relative > 0.3) return 2
+  if (wristY < poseLineTop) return 0
+  if (wristY > poseLineBottom) return 2
   return 1
 }
 
@@ -232,6 +241,92 @@ function applyPoseLane(lane) {
   }
 }
 
+function isHandsUp(landmarks) {
+  const leftWrist = landmarks[15]
+  const rightWrist = landmarks[16]
+  const leftShoulder = landmarks[11]
+  const rightShoulder = landmarks[12]
+  if (
+    leftWrist.visibility < 0.5 ||
+    rightWrist.visibility < 0.5 ||
+    leftShoulder.visibility < 0.4 ||
+    rightShoulder.visibility < 0.4
+  ) {
+    return false
+  }
+  const wristY = (leftWrist.y + rightWrist.y) * 0.5
+  return wristY < poseLineTop
+}
+
+function updateGestureStart(landmarks) {
+  if (!gestureStartEnabled || activeViewId !== "gameView") {
+    gestureHoldStart = 0
+    gestureHoldSeconds = 0
+    poseStatus.textContent = gestureStartEnabled ? "手势：待机" : "手势：关闭"
+    return
+  }
+  if (!landmarks || gameState !== "idle") {
+    poseStatus.textContent = "手势：待机"
+    gestureHoldStart = 0
+    gestureHoldSeconds = 0
+    return
+  }
+  if (isHandsUp(landmarks)) {
+    if (!gestureHoldStart) {
+      gestureHoldStart = performance.now()
+    }
+    gestureHoldSeconds = (performance.now() - gestureHoldStart) / 1000
+    poseStatus.textContent = `手势：准备 ${gestureHoldSeconds.toFixed(1)}s`
+    if (gestureHoldSeconds >= 2) {
+      poseStatus.textContent = "手势：已触发"
+      gestureHoldStart = 0
+      gestureHoldSeconds = 0
+      startGame()
+    }
+  } else {
+    poseStatus.textContent = "手势：待机"
+    gestureHoldStart = 0
+    gestureHoldSeconds = 0
+  }
+}
+
+function clampPoseLines() {
+  poseLineTop = Math.max(0.1, Math.min(0.9, poseLineTop))
+  poseLineBottom = Math.max(0.1, Math.min(0.9, poseLineBottom))
+  if (poseLineBottom - poseLineTop < 0.1) {
+    poseLineBottom = poseLineTop + 0.1
+  }
+  if (poseLineBottom > 0.95) {
+    poseLineBottom = 0.95
+    poseLineTop = Math.min(poseLineTop, 0.85)
+  }
+}
+
+function updatePoseLineByPointer(event) {
+  const rect = poseCanvas.getBoundingClientRect()
+  const y = (event.clientY - rect.top) / rect.height
+  if (poseDragging === "top") {
+    poseLineTop = Math.min(y, poseLineBottom - 0.1)
+  } else if (poseDragging === "bottom") {
+    poseLineBottom = Math.max(y, poseLineTop + 0.1)
+  }
+  clampPoseLines()
+}
+
+function drawPoseLines(poseCtx, width, height) {
+  const topY = poseLineTop * height
+  const bottomY = poseLineBottom * height
+  poseCtx.strokeStyle = "rgba(255, 255, 255, 0.6)"
+  poseCtx.lineWidth = 2
+  poseCtx.beginPath()
+  poseCtx.moveTo(0, topY)
+  poseCtx.lineTo(width, topY)
+  poseCtx.moveTo(0, bottomY)
+  poseCtx.lineTo(width, bottomY)
+  poseCtx.stroke()
+}
+
+// 绘制体感骨架并触发轨道与手势逻辑
 function onPoseResults(results) {
   if (!poseCanvas || !poseVideo) return
   const width = poseVideo.videoWidth || 640
@@ -240,7 +335,10 @@ function onPoseResults(results) {
   poseCanvas.height = height
   const poseCtx = poseCanvas.getContext("2d")
   poseCtx.save()
+  poseCtx.setTransform(1, 0, 0, 1, 0, 0)
   poseCtx.clearRect(0, 0, width, height)
+  poseCtx.translate(width, 0)
+  poseCtx.scale(-1, 1)
   poseCtx.drawImage(results.image, 0, 0, width, height)
   if (results.poseLandmarks) {
     drawConnectors(poseCtx, results.poseLandmarks, POSE_CONNECTIONS, {
@@ -253,7 +351,11 @@ function onPoseResults(results) {
     })
     const lane = determinePoseLane(results.poseLandmarks)
     applyPoseLane(lane)
+    updateGestureStart(results.poseLandmarks)
+  } else {
+    updateGestureStart(null)
   }
+  drawPoseLines(poseCtx, width, height)
   poseCtx.restore()
 }
 
@@ -264,6 +366,7 @@ function getAudioContext() {
   return audioContext
 }
 
+// IndexedDB 作为统一存储后端（http 与 file 协议一致）
 function openDb() {
   if (dbPromise) return dbPromise
   dbPromise = new Promise((resolve, reject) => {
@@ -313,6 +416,34 @@ async function deleteSongById(songId) {
   })
 }
 
+// file:// 环境下使用 OPFS 保存 songs.json，解决浏览器本地文件访问限制
+async function getFileDirectory() {
+  if (!navigator.storage?.getDirectory || !isFileProtocol) return null
+  return navigator.storage.getDirectory()
+}
+
+async function readSongsFromFileSystem() {
+  const directory = await getFileDirectory()
+  if (!directory) return null
+  try {
+    const handle = await directory.getFileHandle("songs.json")
+    const file = await handle.getFile()
+    const text = await file.text()
+    return JSON.parse(text)
+  } catch (error) {
+    return null
+  }
+}
+
+async function writeSongsToFileSystem(list) {
+  const directory = await getFileDirectory()
+  if (!directory) return
+  const handle = await directory.getFileHandle("songs.json", { create: true })
+  const writable = await handle.createWritable()
+  await writable.write(JSON.stringify(list))
+  await writable.close()
+}
+
 function stopAudio() {
   if (audioSource) {
     audioSource.stop()
@@ -321,6 +452,7 @@ function stopAudio() {
   }
 }
 
+// Web Audio 预览播放，供编辑器与游戏共用
 function playAudio(offsetMs = 0) {
   if (!audioBuffer) return
   stopAudio()
@@ -341,10 +473,64 @@ async function decodeAudio(dataUrl) {
   return audioBuffer
 }
 
+// BPM 估算基于能量峰检测，适配录入音频后自动更新
+function estimateBpmFromOnsets(onsets) {
+  if (onsets.length < 2) return 120
+  const intervals = []
+  for (let i = 1; i < onsets.length; i += 1) {
+    intervals.push(onsets[i] - onsets[i - 1])
+  }
+  const avg = intervals.reduce((sum, value) => sum + value, 0) / intervals.length
+  return Math.round(60000 / avg)
+}
+
+async function autoDetectBpmFromBuffer() {
+  if (!audioBuffer) return
+  bpmStatus.textContent = "BPM 计算中 0%"
+  const channel = audioBuffer.getChannelData(0)
+  const sampleRate = audioBuffer.sampleRate
+  const windowSize = 2048
+  const hopSize = 1024
+  const energies = []
+  const totalFrames = Math.floor((channel.length - windowSize) / hopSize)
+  for (let i = 0; i < totalFrames; i += 1) {
+    let sum = 0
+    const start = i * hopSize
+    for (let j = 0; j < windowSize; j += 1) {
+      const value = channel[start + j] || 0
+      sum += value * value
+    }
+    energies.push(sum / windowSize)
+    if (i % 200 === 0) {
+      const progress = Math.min(99, Math.round((i / totalFrames) * 100))
+      bpmStatus.textContent = `BPM 计算中 ${progress}%`
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  const meanEnergy = energies.reduce((sum, value) => sum + value, 0) / energies.length
+  const threshold = meanEnergy * 1.5
+  const onsets = []
+  for (let i = 1; i < energies.length - 1; i += 1) {
+    if (energies[i] > threshold && energies[i] > energies[i - 1] && energies[i] > energies[i + 1]) {
+      const timeMs = (i * hopSize * 1000) / sampleRate
+      onsets.push(timeMs)
+    }
+  }
+  const bpmValue = Math.max(60, Math.min(200, estimateBpmFromOnsets(onsets)))
+  bpm = bpmValue
+  beatMs = 60000 / bpm
+  bpmInput.value = String(bpm)
+  bpmStatus.textContent = `BPM 已更新：${bpm}`
+  refreshChartArea()
+}
+
 function setAudioMeta(name, dataUrl) {
   editorAudioName = name || "未选择音频"
   audioName.textContent = editorAudioName
   editorAudioDataUrl = dataUrl || null
+  if (bpmStatus) {
+    bpmStatus.textContent = dataUrl ? "BPM 计算中..." : "等待音频"
+  }
   if (!dataUrl) {
     audioBuffer = null
     return
@@ -353,6 +539,7 @@ function setAudioMeta(name, dataUrl) {
     updateEditorDuration()
     refreshChartArea()
     renderTimelines()
+    autoDetectBpmFromBuffer()
   })
 }
 
@@ -377,9 +564,9 @@ function buildObjectsFromItems(items) {
 
 function setTool(tool) {
   toolState.active = tool
-  document.querySelectorAll(".tool-button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tool === tool)
-  })
+  if (toolSelect) {
+    toolSelect.value = tool
+  }
 }
 
 function clampLane(lane) {
@@ -409,6 +596,8 @@ function resetGameState() {
 function startGame() {
   if (!currentSong) return
   if (gameState === "playing") return
+  if (gameState === "gameover") return
+  clearGameOver()
   resetGameState()
   objects = buildObjectsFromItems(currentSong.items)
   bpm = currentSong.bpm
@@ -443,6 +632,7 @@ function resetGame() {
   setStatus("按空格开始")
   resetGameState()
   stopAudio()
+  clearGameOver()
 }
 
 function drawTrack() {
@@ -575,8 +765,7 @@ function updateObjects(elapsed) {
             invincibleUntil = now + invincibleDuration
             score = Math.max(0, score - 50)
             if (lives <= 0) {
-              gameState = "gameover"
-              setStatus("对决失败，按空格重新开始")
+              setGameOver("生命耗尽")
             } else {
               setStatus("撞到了幽灵，无敌 3 秒")
             }
@@ -604,6 +793,27 @@ function updateGame() {
     setStatus("节奏结束")
     stopAudio()
   }
+}
+
+// 游戏结束弹窗与音频资源释放
+function setGameOver(reason) {
+  gameState = "gameover"
+  stopAudio()
+  setStatus("对决结束")
+  gameOverTitle.textContent = "对决结束"
+  gameOverReason.textContent = reason
+  gameOverScore.textContent = String(score)
+  gameOverModal.classList.remove("hidden")
+  startButton.disabled = true
+  pauseButton.disabled = true
+  resetButton.disabled = true
+}
+
+function clearGameOver() {
+  gameOverModal.classList.add("hidden")
+  startButton.disabled = false
+  pauseButton.disabled = false
+  resetButton.disabled = false
 }
 
 function drawTimelineBase(context, width) {
@@ -799,16 +1009,43 @@ function updateRecording() {
   }
 }
 
+// 统一写入：IndexedDB 为主，file:// 环境同步到 OPFS
 async function saveSongs() {
   await Promise.all(songs.map((song) => putSong(song)))
+  await writeSongsToFileSystem(songs)
 }
 
+// 迁移历史 localStorage 数据到当前存储适配器
+async function mergeLegacySongs() {
+  const legacyRaw = localStorage.getItem(storageKey)
+  if (!legacyRaw) return
+  try {
+    const legacySongs = JSON.parse(legacyRaw)
+    if (Array.isArray(legacySongs)) {
+      legacySongs.forEach((legacy) => {
+        if (!songs.some((song) => song.id === legacy.id)) {
+          songs.push(legacy)
+        }
+      })
+    }
+  } catch (error) {
+    return
+  }
+}
+
+// 载入逻辑：IndexedDB -> file:// fallback -> localStorage 迁移
 async function loadSongs() {
   try {
     songs = await getAllSongs()
   } catch (error) {
     songs = []
   }
+  const fileSongs = await readSongsFromFileSystem()
+  if (Array.isArray(fileSongs) && fileSongs.length) {
+    songs = fileSongs
+    await Promise.all(songs.map((song) => putSong(song)))
+  }
+  await mergeLegacySongs()
   if (!songs.length) {
     const defaultSong = {
       id: String(Date.now()),
@@ -821,8 +1058,8 @@ async function loadSongs() {
       audioName: ""
     }
     songs = [defaultSong]
-    await saveSongs()
   }
+  await saveSongs()
 }
 
 function renderSongList() {
@@ -934,7 +1171,7 @@ function saveSongFromEditor() {
   const existingIndex = songs.findIndex((song) => song.id === nowSong.id)
   if (existingIndex >= 0) songs[existingIndex] = nowSong
   else songs.unshift(nowSong)
-  putSong(nowSong).then(() => {
+  saveSongs().then(() => {
     renderSongSelect()
     renderSongList()
     editorSongId = nowSong.id
@@ -947,6 +1184,7 @@ function saveSongFromEditor() {
 async function removeSong(songId) {
   songs = songs.filter((song) => song.id !== songId)
   await deleteSongById(songId)
+  await writeSongsToFileSystem(songs)
   renderSongSelect()
   renderSongList()
   if (selectedSongId === songId) {
@@ -966,27 +1204,7 @@ function showView(viewId) {
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === viewId)
   })
-}
-
-function autoDetectBpm() {
-  if (!recordPath.length) return
-  const changes = []
-  for (let i = 1; i < recordPath.length; i += 1) {
-    if (recordPath[i].lane !== recordPath[i - 1].lane) {
-      changes.push(recordPath[i].time)
-    }
-  }
-  if (changes.length < 2) return
-  const intervals = []
-  for (let i = 1; i < changes.length; i += 1) {
-    intervals.push(changes[i] - changes[i - 1])
-  }
-  const avg = intervals.reduce((sum, value) => sum + value, 0) / intervals.length
-  const bpmValue = Math.round(60000 / avg)
-  bpm = Math.max(60, Math.min(200, bpmValue))
-  beatMs = 60000 / bpm
-  bpmInput.value = String(bpm)
-  refreshChartArea()
+  window.scrollTo(0, 0)
 }
 
 function handleAudioInput(event) {
@@ -1001,27 +1219,24 @@ function handleAudioInput(event) {
 }
 
 function bindEvents() {
-  document.querySelectorAll(".tool-button").forEach((button) => {
-    button.addEventListener("click", () => setTool(button.dataset.tool))
+  toolSelect.addEventListener("change", () => {
+    setTool(toolSelect.value)
   })
   bpmInput.addEventListener("change", () => {
     bpm = Math.max(60, Math.min(200, Number(bpmInput.value) || 120))
     beatMs = 60000 / bpm
     refreshChartArea()
   })
-  clearButton.addEventListener("click", () => {
-    editorItems = []
-    refreshChartArea()
-    renderTimelines()
-  })
-  exportButton.addEventListener("click", refreshChartArea)
-  importButton.addEventListener("click", loadChartFromText)
   startButton.addEventListener("click", () => {
     if (gameState === "paused") resumeGame()
     else startGame()
   })
   pauseButton.addEventListener("click", pauseGame)
   resetButton.addEventListener("click", resetGame)
+  playAudioButton.addEventListener("click", () => {
+    playAudio(0)
+  })
+  stopAudioButton.addEventListener("click", stopAudio)
   primaryStart.addEventListener("click", () => showView("gameSetupView"))
   primaryEditor.addEventListener("click", () => showView("editorView"))
   openEditorFromSetup.addEventListener("click", () => showView("editorView"))
@@ -1035,19 +1250,51 @@ function bindEvents() {
   saveSongButton.addEventListener("click", saveSongFromEditor)
   loadSongButton.addEventListener("click", () => loadSongToEditor(songSelect.value))
   newSongButton.addEventListener("click", createNewSong)
-  deleteSongButton.addEventListener("click", async () => {
-    if (editorSongId) {
-      await removeSong(editorSongId)
-    }
-  })
-  autoBpmButton.addEventListener("click", autoDetectBpm)
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view))
   })
-  recordButton.addEventListener("click", startRecording)
-  stopRecordButton.addEventListener("click", stopRecording)
   editorCanvas.addEventListener("click", handleEditorClick)
   audioInput.addEventListener("change", handleAudioInput)
+  gestureStartToggle.addEventListener("change", () => {
+    gestureStartEnabled = gestureStartToggle.checked
+    poseStatus.textContent = gestureStartEnabled ? "手势：待机" : "手势：关闭"
+  })
+  poseCanvas.addEventListener("pointerdown", (event) => {
+    const rect = poseCanvas.getBoundingClientRect()
+    const y = ((event.clientY - rect.top) / rect.height) * poseCanvas.height
+    const topY = poseLineTop * poseCanvas.height
+    const bottomY = poseLineBottom * poseCanvas.height
+    if (Math.abs(y - topY) < 12) {
+      poseDragging = "top"
+    } else if (Math.abs(y - bottomY) < 12) {
+      poseDragging = "bottom"
+    }
+    if (poseDragging) {
+      poseCanvas.setPointerCapture(event.pointerId)
+      updatePoseLineByPointer(event)
+    }
+  })
+  poseCanvas.addEventListener("pointermove", (event) => {
+    if (!poseDragging) return
+    updatePoseLineByPointer(event)
+  })
+  poseCanvas.addEventListener("pointerup", (event) => {
+    if (!poseDragging) return
+    poseDragging = null
+    poseCanvas.releasePointerCapture(event.pointerId)
+  })
+  poseCanvas.addEventListener("pointerleave", () => {
+    poseDragging = null
+  })
+  restartButton.addEventListener("click", () => {
+    clearGameOver()
+    startGame()
+  })
+  backToEditorButton.addEventListener("click", () => {
+    clearGameOver()
+    resetGame()
+    showView("editorView")
+  })
   refreshCameraButton.addEventListener("click", async () => {
     await enumerateCameras()
     if (cameraSelect.value) {
@@ -1062,6 +1309,7 @@ function bindEvents() {
   window.addEventListener("keydown", (event) => {
     const key = event.key.toLowerCase()
     if (activeViewId === "gameView") {
+      if (gameState === "gameover") return
       if (key === " ") {
         if (gameState === "playing") pauseGame()
         else if (gameState === "paused") resumeGame()
@@ -1094,6 +1342,39 @@ function isPowered() {
   return performance.now() < powerUntil
 }
 
+function runUnitTests() {
+  const results = []
+  const assert = (name, condition) => {
+    results.push({ name, passed: Boolean(condition) })
+  }
+  assert("estimateBpmFromOnsets 120", estimateBpmFromOnsets([0, 500, 1000, 1500]) === 120)
+  const originalTop = poseLineTop
+  const originalBottom = poseLineBottom
+  poseLineTop = 0.3
+  poseLineBottom = 0.7
+  const makeLandmarks = (wristY, shoulderY, hipY, spread) => {
+    const list = Array.from({ length: 33 }, () => ({
+      x: 0.5,
+      y: 0.5,
+      visibility: 1
+    }))
+    list[11] = { x: 0.4, y: shoulderY, visibility: 1 }
+    list[12] = { x: 0.6, y: shoulderY, visibility: 1 }
+    list[23] = { x: 0.4, y: hipY, visibility: 1 }
+    list[24] = { x: 0.6, y: hipY, visibility: 1 }
+    list[15] = { x: 0.5 - spread / 2, y: wristY, visibility: 1 }
+    list[16] = { x: 0.5 + spread / 2, y: wristY, visibility: 1 }
+    return list
+  }
+  assert("determinePoseLane up", determinePoseLane(makeLandmarks(0.2, 0.4, 0.8, 0.2)) === 0)
+  assert("determinePoseLane mid", determinePoseLane(makeLandmarks(0.5, 0.4, 0.8, 0.2)) === 1)
+  assert("determinePoseLane down", determinePoseLane(makeLandmarks(0.9, 0.4, 0.8, 0.2)) === 2)
+  poseLineTop = originalTop
+  poseLineBottom = originalBottom
+  console.table(results)
+  return results.every((item) => item.passed)
+}
+
 function updateRecordingTrail() {
   updateRecording()
   if (recording) {
@@ -1121,6 +1402,9 @@ async function init() {
   setTool("pellet")
   resetGameState()
   showView("homeView")
+  gestureStartEnabled = gestureStartToggle.checked
+  poseStatus.textContent = gestureStartEnabled ? "手势：待机" : "手势：关闭"
+  bpmStatus.textContent = editorAudioDataUrl ? "BPM 计算中..." : "等待音频"
   enumerateCameras().then(() => {
     if (cameraSelect.value) {
       startPoseCamera(cameraSelect.value)
@@ -1128,6 +1412,9 @@ async function init() {
   })
   if (navigator.mediaDevices?.addEventListener) {
     navigator.mediaDevices.addEventListener("devicechange", enumerateCameras)
+  }
+  if (new URLSearchParams(window.location.search).has("test")) {
+    runUnitTests()
   }
   loop()
 }
