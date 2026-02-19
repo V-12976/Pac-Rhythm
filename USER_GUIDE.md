@@ -21,3 +21,11 @@
 
 ## 测试模式
 - 访问 `http://localhost:8000/?test=1` 可运行内置单元测试
+
+## 曲谱包分享（Song Pack）
+- 曲谱包保存在 `songs/<包名>/` 文件夹中，包含 `chart.json`（谱面）和音频文件
+- 在 `songs/index.json` 中注册曲谱包，格式：`{ "folder": "包名", "audio": "audio.mp3" }`
+- 启动游戏后，文件夹曲谱包会自动加载并在曲目列表中显示（标有 📁 图标）
+- 在"开始游戏"页面，IndexedDB 曲目可点击"导出"按钮下载为 zip 文件
+- 将 zip 解压到 `songs/` 目录并在 `index.json` 中注册即可分享
+- **注意**：曲谱包加载需通过 HTTP 服务器运行（如 `python -m http.server 8000`）

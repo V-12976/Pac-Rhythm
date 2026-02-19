@@ -1,0 +1,13 @@
+{
+    "packs": [
+        {
+            "folder": "demo-song",
+            "audio": "audio.mp3"
+        },
+	{
+  	"folder": "Somewhere_Else",
+  	"audio": "audio.mp3"
+	}
+    ]
+}
+

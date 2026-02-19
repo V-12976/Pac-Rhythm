@@ -86,8 +86,12 @@ let currentSong = null
 let activeViewId = "homeView"
 let editorSongId = null
 let recording = false
+let recordingPaused = false
 let recordStartTime = 0
 let recordLastSample = 0
+let recordPausedElapsed = 0
+let recordTotalPauseDuration = 0
+let recordPauseStartTime = 0
 let editorDurationMs = 30000
 let editorAudioDataUrl = null
 let editorAudioName = "未选择音频"
@@ -178,28 +182,33 @@ async function enumerateCameras() {
 // 绑定指定摄像头到 MediaPipe 处理链
 async function startPoseCamera(deviceId) {
   if (!navigator.mediaDevices?.getUserMedia || !pose) return
-  if (poseStream) {
-    poseStream.getTracks().forEach((track) => track.stop())
+  try {
+    if (poseStream) {
+      poseStream.getTracks().forEach((track) => track.stop())
+    }
+    const constraints = deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true }
+    poseStream = await navigator.mediaDevices.getUserMedia(constraints)
+    poseVideo.srcObject = poseStream
+    await poseVideo.play()
+    if (poseCamera) {
+      poseCamera.stop()
+    }
+    lastPoseSendAt = 0
+    poseCamera = new Camera(poseVideo, {
+      onFrame: async () => {
+        const now = performance.now()
+        if (now - lastPoseSendAt < 33) return
+        lastPoseSendAt = now
+        await pose.send({ image: poseVideo })
+      },
+      width: 640,
+      height: 360
+    })
+    poseCamera.start()
+  } catch (error) {
+    console.warn("摄像头启动失败:", error)
+    poseStatus.textContent = "摄像头不可用"
   }
-  const constraints = deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: true }
-  poseStream = await navigator.mediaDevices.getUserMedia(constraints)
-  poseVideo.srcObject = poseStream
-  await poseVideo.play()
-  if (poseCamera) {
-    poseCamera.stop()
-  }
-  lastPoseSendAt = 0
-  poseCamera = new Camera(poseVideo, {
-    onFrame: async () => {
-      const now = performance.now()
-      if (now - lastPoseSendAt < 33) return
-      lastPoseSendAt = now
-      await pose.send({ image: poseVideo })
-    },
-    width: 640,
-    height: 360
-  })
-  poseCamera.start()
 }
 
 // 轨道判定：手腕相对肩/髋的位置决定上/中/下
@@ -444,6 +453,43 @@ async function writeSongsToFileSystem(list) {
   await writable.close()
 }
 
+// 从 songs/ 文件夹加载曲谱包（需 HTTP 服务器环境）
+async function loadFolderPacks() {
+  if (isFileProtocol) return []
+  try {
+    const response = await fetch("songs/index.json")
+    if (!response.ok) return []
+    const index = await response.json()
+    if (!Array.isArray(index.packs)) return []
+    const folderSongs = []
+    for (const pack of index.packs) {
+      try {
+        const chartResponse = await fetch(`songs/${pack.folder}/chart.json`)
+        if (!chartResponse.ok) continue
+        const chart = await chartResponse.json()
+        const audioUrl = pack.audio ? `songs/${pack.folder}/${pack.audio}` : null
+        folderSongs.push({
+          id: `folder:${pack.folder}`,
+          name: chart.name || pack.folder,
+          bpm: chart.bpm || 120,
+          durationMs: chart.durationMs || 30000,
+          items: Array.isArray(chart.items) ? chart.items : [],
+          recordPath: Array.isArray(chart.recordPath) ? chart.recordPath : [],
+          audioDataUrl: audioUrl,
+          audioName: pack.audio || "",
+          source: "folder",
+          folder: pack.folder
+        })
+      } catch (error) {
+        console.warn(`曲谱包 ${pack.folder} 加载失败:`, error)
+      }
+    }
+    return folderSongs
+  } catch (error) {
+    return []
+  }
+}
+
 function stopAudio() {
   if (audioSource) {
     audioSource.stop()
@@ -466,11 +512,23 @@ function playAudio(offsetMs = 0) {
 }
 
 async function decodeAudio(dataUrl) {
-  const ctx = getAudioContext()
-  const response = await fetch(dataUrl)
-  const buffer = await response.arrayBuffer()
-  audioBuffer = await ctx.decodeAudioData(buffer)
-  return audioBuffer
+  if (!dataUrl) {
+    audioBuffer = null
+    return null
+  }
+  try {
+    const ctx = getAudioContext()
+    const response = await fetch(dataUrl)
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const buffer = await response.arrayBuffer()
+    audioBuffer = await ctx.decodeAudioData(buffer)
+    return audioBuffer
+  } catch (error) {
+    console.warn("音频解码失败:", error)
+    audioBuffer = null
+    if (bpmStatus) bpmStatus.textContent = "音频解码失败"
+    return null
+  }
 }
 
 // BPM 估算基于能量峰检测，适配录入音频后自动更新
@@ -789,9 +847,8 @@ function updateGame() {
   const durationMs = currentSong?.durationMs ?? editorDurationMs
   const finished = objects.every((object) => object.passed || object.collected || object.hit)
   if (finished && elapsed > durationMs + leadTime) {
-    gameState = "idle"
-    setStatus("节奏结束")
     stopAudio()
+    setGameOver("节奏完成")
   }
 }
 
@@ -810,6 +867,7 @@ function setGameOver(reason) {
 }
 
 function clearGameOver() {
+  gameState = "idle"
   gameOverModal.classList.add("hidden")
   startButton.disabled = false
   pauseButton.disabled = false
@@ -889,6 +947,29 @@ function resizeTimeline(canvasEl, durationMs) {
   return width
 }
 
+function drawPlaybackCursor(context, timeMs) {
+  const x = timelinePadding + (timeMs / 1000) * pxPerSecond
+  context.strokeStyle = "rgba(0, 230, 255, 0.9)"
+  context.lineWidth = 2
+  context.beginPath()
+  context.moveTo(x, 8)
+  context.lineTo(x, timelineHeight - 8)
+  context.stroke()
+  context.fillStyle = "rgba(0, 230, 255, 0.9)"
+  context.beginPath()
+  context.moveTo(x - 5, 8)
+  context.lineTo(x + 5, 8)
+  context.lineTo(x, 16)
+  context.closePath()
+  context.fill()
+}
+
+function getRecordingElapsed() {
+  if (recordingPaused) return recordPausedElapsed
+  if (!recording) return 0
+  return performance.now() - recordStartTime - recordTotalPauseDuration
+}
+
 function renderTimelines() {
   updateEditorDuration()
   const recordWidth = resizeTimeline(recordCanvas, editorDurationMs)
@@ -900,6 +981,11 @@ function renderTimelines() {
   drawTimelineBase(editorCtx, editorWidth)
   drawRecordPath(editorCtx, editorWidth)
   drawItems(editorCtx, editorWidth)
+  if (recording || recordingPaused) {
+    const elapsed = getRecordingElapsed()
+    drawPlaybackCursor(recordCtx, elapsed)
+    drawPlaybackCursor(editorCtx, elapsed)
+  }
 }
 
 function scrollTimelineToTime(container, timeMs) {
@@ -969,16 +1055,65 @@ function loadChartFromText() {
 function startRecording() {
   if (recording) return
   recording = true
+  recordingPaused = false
   recordPath = []
   recordStartTime = performance.now()
   recordLastSample = 0
-  setStatus("录制中")
+  recordTotalPauseDuration = 0
+  recordPauseStartTime = 0
+  recordPausedElapsed = 0
+  setStatus("录制中 (Q暂停 / Esc停止)")
   playAudio(0)
+}
+
+function pauseRecording() {
+  if (!recording || recordingPaused) return
+  recordingPaused = true
+  recordPausedElapsed = performance.now() - recordStartTime - recordTotalPauseDuration
+  recordPauseStartTime = performance.now()
+  stopAudio()
+  setStatus("录制暂停 (←→ 调整位置 / Q继续 / Esc停止)")
+  renderTimelines()
+  const recordContainer = recordCanvas.parentElement
+  const editorContainer = editorCanvas.parentElement
+  scrollTimelineToTime(recordContainer, recordPausedElapsed)
+  scrollTimelineToTime(editorContainer, recordPausedElapsed)
+}
+
+function resumeRecording() {
+  if (!recording || !recordingPaused) return
+  recordingPaused = false
+  const thisPauseDuration = performance.now() - recordPauseStartTime
+  recordTotalPauseDuration += thisPauseDuration
+  // Adjust startTime so elapsed calculation stays correct after seek
+  const realElapsed = performance.now() - recordStartTime - recordTotalPauseDuration
+  if (Math.abs(realElapsed - recordPausedElapsed) > 10) {
+    // User seeked during pause, adjust total pause duration to compensate
+    recordTotalPauseDuration = performance.now() - recordStartTime - recordPausedElapsed
+  }
+  setStatus("录制中 (Q暂停 / Esc停止)")
+  playAudio(recordPausedElapsed)
+}
+
+function seekRecording(deltaMs) {
+  if (!recordingPaused) return
+  const maxMs = audioBuffer ? audioBuffer.duration * 1000 : editorDurationMs
+  recordPausedElapsed = Math.max(0, Math.min(maxMs, recordPausedElapsed + deltaMs))
+  // Trim red trail: remove recorded points beyond the new position
+  recordPath = recordPath.filter(p => p.time <= recordPausedElapsed)
+  recordLastSample = recordPausedElapsed
+  setStatus(`录制暂停 ${(recordPausedElapsed / 1000).toFixed(1)}s (←→ 调整 / Q继续 / Esc停止)`)
+  renderTimelines()
+  const recordContainer = recordCanvas.parentElement
+  const editorContainer = editorCanvas.parentElement
+  scrollTimelineToTime(recordContainer, recordPausedElapsed)
+  scrollTimelineToTime(editorContainer, recordPausedElapsed)
 }
 
 function stopRecording() {
   if (!recording) return
   recording = false
+  recordingPaused = false
   stopAudio()
   setStatus("录制结束")
   refreshChartArea()
@@ -986,9 +1121,9 @@ function stopRecording() {
 }
 
 function updateRecording() {
-  if (!recording) return
+  if (!recording || recordingPaused) return
   const now = performance.now()
-  const time = now - recordStartTime
+  const time = now - recordStartTime - recordTotalPauseDuration
   if (audioBuffer && time >= audioBuffer.duration * 1000) {
     stopRecording()
     return
@@ -1009,10 +1144,11 @@ function updateRecording() {
   }
 }
 
-// 统一写入：IndexedDB 为主，file:// 环境同步到 OPFS
+// 统一写入：IndexedDB 为主，file:// 环境同步到 OPFS（跳过文件夹曲谱包）
 async function saveSongs() {
-  await Promise.all(songs.map((song) => putSong(song)))
-  await writeSongsToFileSystem(songs)
+  const persistSongs = songs.filter((song) => song.source !== "folder")
+  await Promise.all(persistSongs.map((song) => putSong(song)))
+  await writeSongsToFileSystem(persistSongs)
 }
 
 // 迁移历史 localStorage 数据到当前存储适配器
@@ -1033,7 +1169,7 @@ async function mergeLegacySongs() {
   }
 }
 
-// 载入逻辑：IndexedDB -> file:// fallback -> localStorage 迁移
+// 载入逻辑：IndexedDB -> file:// fallback -> localStorage 迁移 -> 文件夹曲谱包
 async function loadSongs() {
   try {
     songs = await getAllSongs()
@@ -1042,10 +1178,21 @@ async function loadSongs() {
   }
   const fileSongs = await readSongsFromFileSystem()
   if (Array.isArray(fileSongs) && fileSongs.length) {
-    songs = fileSongs
+    fileSongs.forEach((fileSong) => {
+      if (!songs.some((song) => song.id === fileSong.id)) {
+        songs.push(fileSong)
+      }
+    })
     await Promise.all(songs.map((song) => putSong(song)))
   }
   await mergeLegacySongs()
+  // 加载文件夹曲谱包
+  const folderPacks = await loadFolderPacks()
+  folderPacks.forEach((pack) => {
+    if (!songs.some((song) => song.id === pack.id)) {
+      songs.push(pack)
+    }
+  })
   if (!songs.length) {
     const defaultSong = {
       id: String(Date.now()),
@@ -1070,23 +1217,34 @@ function renderSongList() {
     if (song.id === selectedSongId) card.classList.add("selected")
     const title = document.createElement("div")
     title.className = "song-title"
-    title.textContent = song.name
+    const isFolder = song.source === "folder"
+    title.textContent = (isFolder ? "📁 " : "") + song.name
     const meta = document.createElement("div")
     meta.className = "song-meta"
     const duration = Math.round((song.durationMs || 0) / 1000)
-    meta.textContent = `${song.bpm} BPM · ${duration}s`
+    meta.textContent = `${song.bpm} BPM · ${duration}s` + (isFolder ? " · 文件夹曲谱包" : "")
     card.appendChild(title)
     card.appendChild(meta)
     const actionRow = document.createElement("div")
     actionRow.className = "song-actions"
-    const deleteButton = document.createElement("button")
-    deleteButton.className = "text-button"
-    deleteButton.textContent = "删除"
-    deleteButton.addEventListener("click", async (event) => {
-      event.stopPropagation()
-      await removeSong(song.id)
-    })
-    actionRow.appendChild(deleteButton)
+    if (!isFolder) {
+      const exportButton = document.createElement("button")
+      exportButton.className = "outlined-button"
+      exportButton.textContent = "导出"
+      exportButton.addEventListener("click", async (event) => {
+        event.stopPropagation()
+        await exportSongAsZip(song.id)
+      })
+      actionRow.appendChild(exportButton)
+      const deleteButton = document.createElement("button")
+      deleteButton.className = "text-button"
+      deleteButton.textContent = "删除"
+      deleteButton.addEventListener("click", async (event) => {
+        event.stopPropagation()
+        await removeSong(song.id)
+      })
+      actionRow.appendChild(deleteButton)
+    }
     card.appendChild(actionRow)
     card.addEventListener("click", () => {
       selectedSongId = song.id
@@ -1194,6 +1352,53 @@ async function removeSong(songId) {
   if (editorSongId === songId) {
     createNewSong()
   }
+}
+
+// 导出曲目为 zip 文件供分享
+async function exportSongAsZip(songId) {
+  const song = songs.find((item) => item.id === songId)
+  if (!song) return
+  if (typeof JSZip === "undefined") {
+    alert("JSZip 库未加载, 无法导出")
+    return
+  }
+  const zip = new JSZip()
+  const folderName = (song.name || "song").replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_")
+  const folder = zip.folder(folderName)
+  const chart = {
+    name: song.name,
+    bpm: song.bpm,
+    durationMs: song.durationMs,
+    items: song.items || [],
+    recordPath: song.recordPath || []
+  }
+  folder.file("chart.json", JSON.stringify(chart, null, 2))
+  let audioFileName = ""
+  if (song.audioDataUrl && song.audioDataUrl.startsWith("data:")) {
+    const mimeMatch = song.audioDataUrl.match(/^data:(audio\/[^;]+);base64,/)
+    const mime = mimeMatch ? mimeMatch[1] : "audio/mpeg"
+    const ext = mime.split("/")[1] === "mpeg" ? "mp3" : mime.split("/")[1]
+    audioFileName = `audio.${ext}`
+    const base64 = song.audioDataUrl.split(",")[1]
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    folder.file(audioFileName, bytes)
+  }
+  // 生成 index 片段提示
+  const indexSnippet = { folder: folderName, audio: audioFileName }
+  folder.file("README.txt",
+    `将此文件夹放入项目的 songs/ 目录下，\n然后在 songs/index.json 的 packs 数组中添加：\n${JSON.stringify(indexSnippet, null, 2)}\n`
+  )
+  const blob = await zip.generateAsync({ type: "blob" })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = `${folderName}.zip`
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function showView(viewId) {
@@ -1323,9 +1528,20 @@ function bindEvents() {
       if (key === "arrowdown") moveLaneBy("x")
     }
     if (activeViewId === "editorView") {
-      if (key === "s" && !event.repeat) {
+      if (key === "q" && !event.repeat) {
         if (!recording) startRecording()
-        else stopRecording()
+        else if (recordingPaused) resumeRecording()
+        else pauseRecording()
+        return
+      }
+      if (key === "escape" && recording) {
+        stopRecording()
+        return
+      }
+      if (recordingPaused && (key === "arrowleft" || key === "arrowright")) {
+        const step = event.shiftKey ? 5000 : 1000
+        seekRecording(key === "arrowleft" ? -step : step)
+        return
       }
       if (["w", "s", "x"].includes(key)) {
         moveLaneBy(key)
@@ -1383,8 +1599,14 @@ function updateRecordingTrail() {
 }
 
 function loop() {
-  updateGame()
-  updateRecordingTrail()
+  if (activeViewId === "gameView") {
+    updateGame()
+  }
+  if (recording && !recordingPaused) {
+    updateRecordingTrail()
+  } else if (recordingPaused) {
+    renderTimelines()
+  }
   requestAnimationFrame(loop)
 }
 

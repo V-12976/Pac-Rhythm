@@ -1,0 +1,153 @@
+{
+    "name": "Demo Song",
+    "bpm": 128,
+    "durationMs": 16000,
+    "items": [
+        {
+            "time": 1000,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 1500,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 2000,
+            "lane": 2,
+            "type": "pellet"
+        },
+        {
+            "time": 2500,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 3000,
+            "lane": 0,
+            "type": "ghost"
+        },
+        {
+            "time": 3500,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 4000,
+            "lane": 2,
+            "type": "pellet"
+        },
+        {
+            "time": 4500,
+            "lane": 1,
+            "type": "power"
+        },
+        {
+            "time": 5000,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 5500,
+            "lane": 2,
+            "type": "ghost"
+        },
+        {
+            "time": 6000,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 6500,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 7000,
+            "lane": 2,
+            "type": "pellet"
+        },
+        {
+            "time": 7500,
+            "lane": 1,
+            "type": "ghost"
+        },
+        {
+            "time": 8000,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 8500,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 9000,
+            "lane": 2,
+            "type": "power"
+        },
+        {
+            "time": 9500,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 10000,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 10500,
+            "lane": 2,
+            "type": "ghost"
+        },
+        {
+            "time": 11000,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 11500,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 12000,
+            "lane": 2,
+            "type": "pellet"
+        },
+        {
+            "time": 12500,
+            "lane": 0,
+            "type": "ghost"
+        },
+        {
+            "time": 13000,
+            "lane": 1,
+            "type": "pellet"
+        },
+        {
+            "time": 13500,
+            "lane": 2,
+            "type": "pellet"
+        },
+        {
+            "time": 14000,
+            "lane": 1,
+            "type": "power"
+        },
+        {
+            "time": 14500,
+            "lane": 0,
+            "type": "pellet"
+        },
+        {
+            "time": 15000,
+            "lane": 1,
+            "type": "pellet"
+        }
+    ],
+    "recordPath": []
+}
