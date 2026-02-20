@@ -54,9 +54,10 @@ body {
 .brand-mark {
   width: 46px;
   height: 46px;
-  border-radius: 16px;
-  background: radial-gradient(circle at 30% 30%, #ffe082, #ffca28 50%, #f57c00);
-  box-shadow: 0 10px 20px rgba(255, 202, 40, 0.3);
+  border-radius: 50%;
+  background: #FFFF00;
+  box-shadow: 0 10px 20px rgba(255, 255, 0, 0.3);
+  clip-path: polygon(100% 50%, 50% 50%, 80% 20%, 100% 0%, 0% 0%, 0% 100%, 100% 100%, 80% 80%, 50% 50%, 100% 50%);
 }
 
 .app-title {
@@ -172,8 +173,57 @@ body {
   width: 80px;
   height: 80px;
   border-radius: 50%;
-  background: radial-gradient(circle at 30% 30%, #fff1a8, #ffca28 70%);
-  box-shadow: 0 12px 30px rgba(255, 202, 40, 0.4);
+  background: #FFFF00;
+  box-shadow: 0 12px 30px rgba(255, 255, 0, 0.4);
+  position: relative;
+  overflow: hidden;
+  animation: pacman-chomp 0.35s ease-in-out infinite alternate;
+}
+
+/* Mouth wedge using a pseudo-element */
+.hero-pacman::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -5px;
+  width: 50px;
+  height: 80px;
+  background: var(--surface, #121212);
+  clip-path: polygon(0% 50%, 100% 15%, 100% 85%);
+  transform-origin: left center;
+  animation: mouth-open 0.35s ease-in-out infinite alternate;
+}
+
+/* Eye */
+.hero-pacman::after {
+  content: "";
+  position: absolute;
+  top: 14px;
+  left: 36px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #000;
+}
+
+@keyframes pacman-chomp {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes mouth-open {
+  0% {
+    clip-path: polygon(0% 50%, 100% 25%, 100% 75%);
+  }
+
+  100% {
+    clip-path: polygon(0% 50%, 100% 48%, 100% 52%);
+  }
 }
 
 @keyframes pulse {
@@ -181,10 +231,12 @@ body {
     transform: scale(0.9);
     opacity: 0.6;
   }
+
   70% {
     transform: scale(1.05);
     opacity: 0.2;
   }
+
   100% {
     transform: scale(1.1);
     opacity: 0;
@@ -326,109 +378,226 @@ body {
   gap: 16px;
 }
 
-.game-card {
-  padding: 20px 20px 28px;
+/* ===== GAME VIEW - Immersive Layout ===== */
+
+#gameView.active {
+  gap: 0;
 }
 
-.game-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.pose-panel {
-  margin-bottom: 16px;
-}
-
-.pose-card {
-  background: var(--surface-variant);
-  border-radius: 18px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.pose-header {
+.game-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, rgba(12, 17, 31, 0.95), rgba(12, 17, 31, 0.7));
+  border-radius: 16px 16px 0 0;
+  border-bottom: 1px solid rgba(98, 118, 255, 0.15);
   flex-wrap: wrap;
 }
 
-.pose-controls {
+.game-topbar-left {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
 }
 
-.pose-status {
-  font-size: 12px;
-  color: var(--on-surface-variant);
-  padding: 6px 10px;
-  background: #0b1020;
-  border-radius: 999px;
-}
-
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--on-surface-variant);
-  background: #0b1020;
-  padding: 6px 10px;
-  border-radius: 999px;
-}
-
-.pose-controls select {
-  background: var(--surface-variant);
-  border: 1px solid var(--outline);
+.game-song-title {
+  font-size: 16px;
+  font-weight: 700;
   color: var(--on-surface);
-  padding: 8px 12px;
-  border-radius: 12px;
-  min-width: 220px;
 }
 
-.pose-preview {
-  position: relative;
-  width: 100%;
-  max-width: 320px;
-  aspect-ratio: 16 / 9;
-  border-radius: 14px;
-  background: #0b1020;
+.game-song-meta {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+}
+
+.game-status-chip {
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: rgba(98, 118, 255, 0.15);
+  border: 1px solid rgba(98, 118, 255, 0.3);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  animation: chipPulse 2s ease-in-out infinite;
+}
+
+@keyframes chipPulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(98, 118, 255, 0);
+  }
+
+  50% {
+    box-shadow: 0 0 12px 2px rgba(98, 118, 255, 0.25);
+  }
+}
+
+.game-topbar-right {
+  display: flex;
+  gap: 6px;
+}
+
+.game-control-btn {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--on-surface-variant);
+  padding: 6px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.game-control-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.game-control-btn.primary {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: transparent;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(167, 200, 255, 0.25);
+}
+
+.game-control-btn.primary:hover {
+  box-shadow: 0 6px 18px rgba(167, 200, 255, 0.35);
+}
+
+.game-control-btn.ghost-btn {
+  border-color: transparent;
+}
+
+/* Main 3-column game area */
+.game-main {
+  display: grid;
+  grid-template-columns: 140px 1fr 180px;
+  gap: 0;
+  min-height: 400px;
+  background: #060a14;
+  border-radius: 0 0 16px 16px;
   overflow: hidden;
 }
 
-.pose-preview video,
-.pose-preview canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+/* Left HUD panel */
+.game-hud-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  background: linear-gradient(180deg, rgba(16, 22, 50, 0.9), rgba(10, 14, 30, 0.95));
+  border-right: 1px solid rgba(98, 118, 255, 0.1);
 }
 
-.pose-preview video {
-  opacity: 0;
+.hud-block {
+  padding: 10px 8px;
+  border-radius: 12px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-.pose-preview canvas {
-  cursor: ns-resize;
+.hud-block:hover {
+  transform: scale(1.03);
 }
 
-.modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(6, 10, 22, 0.7);
+.hud-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--on-surface-variant);
+  margin-bottom: 4px;
+}
+
+.hud-value {
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.hud-score {
+  border-color: rgba(167, 200, 255, 0.2);
+}
+
+.hud-score .hud-value {
+  color: #a7c8ff;
+  text-shadow: 0 0 18px rgba(167, 200, 255, 0.4);
+}
+
+.hud-combo {
+  border-color: rgba(255, 211, 106, 0.2);
+}
+
+.hud-combo .hud-value {
+  color: #ffd36a;
+  text-shadow: 0 0 14px rgba(255, 211, 106, 0.35);
+}
+
+.hud-life {
+  border-color: rgba(255, 80, 123, 0.2);
+}
+
+.hud-hearts {
+  font-size: 22px;
+  line-height: 1.3;
+  letter-spacing: 2px;
+  filter: drop-shadow(0 0 6px rgba(255, 80, 123, 0.5));
+}
+
+.hud-pellet {
+  border-color: rgba(255, 229, 89, 0.15);
+}
+
+.hud-pellet .hud-value {
+  color: #ffe559;
+  text-shadow: 0 0 12px rgba(255, 229, 89, 0.3);
+}
+
+.hud-power {
+  border-color: rgba(126, 242, 255, 0.15);
+}
+
+.hud-power .hud-value {
+  color: #7ef2ff;
+  text-shadow: 0 0 14px rgba(126, 242, 255, 0.35);
+}
+
+/* Center: Game canvas */
+.game-stage {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 20px;
+  background: #05070f;
+  overflow: hidden;
+}
+
+#gameCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #05070f;
+}
+
+/* Game over modal */
+.modal {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 16, 0.82);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
 }
 
 .modal.hidden {
@@ -436,73 +605,163 @@ body {
 }
 
 .modal-card {
-  background: var(--surface-container);
-  border-radius: 20px;
-  padding: 24px;
-  min-width: 280px;
-  max-width: 420px;
+  background: linear-gradient(135deg, rgba(26, 35, 64, 0.95), rgba(16, 22, 44, 0.98));
+  border: 1px solid rgba(98, 118, 255, 0.2);
+  border-radius: 24px;
+  padding: 32px 36px;
+  min-width: 320px;
+  max-width: 440px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(98, 118, 255, 0.08);
 }
 
-.modal-score {
-  font-size: 14px;
+.modal-icon {
+  font-size: 42px;
+  margin-bottom: 4px;
+}
+
+.modal-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--on-surface);
+}
+
+.modal-reason {
+  font-size: 13px;
   color: var(--on-surface-variant);
+}
+
+.modal-score-big {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  margin: 12px 0;
+}
+
+.modal-score-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--on-surface-variant);
+}
+
+.modal-score-value {
+  font-size: 48px;
+  font-weight: 800;
+  color: var(--primary);
+  text-shadow: 0 0 30px rgba(167, 200, 255, 0.5);
+  font-variant-numeric: tabular-nums;
 }
 
 .modal-actions {
   display: flex;
   gap: 10px;
-  flex-wrap: wrap;
+  margin-top: 8px;
 }
 
-.status-chip {
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: var(--surface-variant);
-  color: var(--on-surface-variant);
-  font-size: 12px;
-}
-
-.stage {
-  position: relative;
-  padding: 16px 16px 60px;
-  border-radius: 20px;
-  background: #0b1020;
-}
-
-#gameCanvas {
-  width: 100%;
-  height: auto;
-  border-radius: 16px;
-  background: #05070f;
-}
-
-.hud {
-  position: absolute;
-  top: 18px;
-  left: 18px;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(6, minmax(80px, auto));
-  font-size: 12px;
-}
-
-.hud-item {
-  background: rgba(16, 22, 40, 0.9);
-  border: 1px solid rgba(98, 118, 255, 0.4);
-  border-radius: 12px;
-  padding: 6px 10px;
-  text-align: center;
-}
-
-.controls {
-  position: absolute;
-  right: 18px;
-  bottom: 16px;
+/* Right: Camera/Pose panel */
+.game-pose-panel {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: 0;
+  background: linear-gradient(180deg, rgba(16, 22, 50, 0.9), rgba(10, 14, 30, 0.95));
+  border-left: 1px solid rgba(98, 118, 255, 0.1);
+  padding: 8px;
+}
+
+.pose-preview-game {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  background: #0b1020;
+  overflow: hidden;
+  border: 1px solid rgba(98, 118, 255, 0.12);
+}
+
+.pose-preview-game video,
+.pose-preview-game canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pose-preview-game video {
+  opacity: 0;
+}
+
+.pose-preview-game canvas {
+  cursor: ns-resize;
+}
+
+.pose-overlay-label {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(0, 0, 0, 0.55);
+  padding: 3px 8px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.pose-compact-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 2px;
+}
+
+.pose-select-compact {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--on-surface);
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.pose-btns-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.toggle-compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--on-surface-variant);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 1;
+}
+
+.pose-btn-compact {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--on-surface-variant);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.pose-btn-compact:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .editor-actions {
@@ -727,12 +986,49 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .hud {
-    grid-template-columns: repeat(3, minmax(80px, auto));
+  .game-main {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
   }
 
-  .controls {
-    position: static;
-    margin-top: 12px;
+  .game-hud-panel {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    border-right: none;
+    border-bottom: 1px solid rgba(98, 118, 255, 0.1);
+    padding: 6px 12px;
+  }
+
+  .hud-block {
+    flex: 1;
+    min-width: 70px;
+    padding: 6px 4px;
+  }
+
+  .hud-value {
+    font-size: 20px;
+  }
+
+  .hud-hearts {
+    font-size: 16px;
+  }
+
+  .game-pose-panel {
+    flex-direction: row;
+    border-left: none;
+    border-top: 1px solid rgba(98, 118, 255, 0.1);
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .pose-preview-game {
+    width: 120px;
+    aspect-ratio: 4/3;
+    flex-shrink: 0;
+  }
+
+  .game-topbar {
+    border-radius: 16px 16px 0 0;
   }
 }

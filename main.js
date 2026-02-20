@@ -46,6 +46,8 @@ const gameOverReason = document.getElementById("gameOverReason")
 const gameOverScore = document.getElementById("gameOverScore")
 const restartButton = document.getElementById("restartButton")
 const backToEditorButton = document.getElementById("backToEditorButton")
+const difficultySelect = document.getElementById("difficultySelect")
+const autoGenerateButton = document.getElementById("autoGenerateButton")
 
 const lanes = 3
 const pacmanX = 160
@@ -126,6 +128,12 @@ const pacman = {
 const toolState = {
   active: "pellet"
 }
+
+const particles = []
+const shockwaves = []
+const comboPopups = []
+let screenShake = 0
+let screenShakeIntensity = 0
 
 function laneToY(lane) {
   return 60 + lane * laneHeight
@@ -455,17 +463,32 @@ async function writeSongsToFileSystem(list) {
 
 // 从 songs/ 文件夹加载曲谱包（需 HTTP 服务器环境）
 async function loadFolderPacks() {
-  if (isFileProtocol) return []
+  if (isFileProtocol) {
+    console.log("[曲谱包] 跳过：file:// 协议不支持")
+    return []
+  }
   try {
-    const response = await fetch("songs/index.json")
-    if (!response.ok) return []
+    const cacheBuster = `?_=${Date.now()}`
+    const response = await fetch("songs/index.json" + cacheBuster)
+    if (!response.ok) {
+      console.warn("[曲谱包] index.json 加载失败:", response.status)
+      return []
+    }
     const index = await response.json()
-    if (!Array.isArray(index.packs)) return []
+    console.log("[曲谱包] index.json 内容:", index)
+    if (!Array.isArray(index.packs)) {
+      console.warn("[曲谱包] index.json 中没有 packs 数组")
+      return []
+    }
     const folderSongs = []
     for (const pack of index.packs) {
       try {
-        const chartResponse = await fetch(`songs/${pack.folder}/chart.json`)
-        if (!chartResponse.ok) continue
+        console.log(`[曲谱包] 正在加载: ${pack.folder}`)
+        const chartResponse = await fetch(`songs/${pack.folder}/chart.json` + cacheBuster)
+        if (!chartResponse.ok) {
+          console.warn(`[曲谱包] ${pack.folder}/chart.json 加载失败:`, chartResponse.status)
+          continue
+        }
         const chart = await chartResponse.json()
         const audioUrl = pack.audio ? `songs/${pack.folder}/${pack.audio}` : null
         folderSongs.push({
@@ -480,12 +503,15 @@ async function loadFolderPacks() {
           source: "folder",
           folder: pack.folder
         })
+        console.log(`[曲谱包] ✅ ${chart.name || pack.folder} 加载成功`)
       } catch (error) {
         console.warn(`曲谱包 ${pack.folder} 加载失败:`, error)
       }
     }
+    console.log(`[曲谱包] 共加载 ${folderSongs.length} 个曲谱包`)
     return folderSongs
   } catch (error) {
+    console.error("[曲谱包] 加载异常:", error)
     return []
   }
 }
@@ -608,6 +634,363 @@ function updateEditorDuration() {
   editorDurationMs = Math.max(30000, audioMs, lastItem + 2000, lastRecord + 2000)
 }
 
+// ========== 自动谱面生成 ==========
+
+async function autoGenerateChart() {
+  if (!audioBuffer) {
+    setStatus("请先加载音频文件")
+    return
+  }
+  const difficulty = difficultySelect ? difficultySelect.value : "normal"
+  setStatus("正在分析音频…")
+  autoGenerateButton.disabled = true
+
+  await new Promise(r => setTimeout(r, 50)) // let UI update
+
+  try {
+    // Step 1: Multi-band onset detection
+    const onsets = detectMultiBandOnsets(audioBuffer)
+    setStatus(`检测到 ${onsets.length} 个节拍点，正在生成谱面…`)
+    await new Promise(r => setTimeout(r, 50))
+
+    // Step 2: Quantize onsets to BPM grid
+    const quantized = quantizeOnsets(onsets, bpm)
+
+    // Step 3: Generate items from quantized beats
+    const items = generateItemsFromBeats(quantized, difficulty, audioBuffer.duration * 1000)
+
+    // Step 4: Generate a matching record path
+    const path = generateRecordPath(items, audioBuffer.duration * 1000)
+
+    // Apply results
+    editorItems = items
+    recordPath = path
+    updateEditorDuration()
+    refreshChartArea()
+    renderTimelines()
+
+    setStatus(`谱面生成完成！${items.length} 个道具，难度：${difficulty}`)
+  } catch (err) {
+    console.error("谱面生成失败:", err)
+    setStatus("谱面生成失败: " + err.message)
+  } finally {
+    autoGenerateButton.disabled = false
+  }
+}
+
+function detectMultiBandOnsets(buffer) {
+  const channel = buffer.getChannelData(0)
+  const sr = buffer.sampleRate
+  const fftSize = 2048
+  const hopSize = 512
+  const totalFrames = Math.floor((channel.length - fftSize) / hopSize)
+
+  // Compute energy in 3 bands per frame
+  const bassEnergies = []
+  const midEnergies = []
+  const highEnergies = []
+
+  // Frequency bin boundaries
+  const freqPerBin = sr / fftSize
+  const bassEnd = Math.ceil(250 / freqPerBin)    // 0-250 Hz (bass/kick)
+  const midEnd = Math.ceil(2000 / freqPerBin)     // 250-2000 Hz (melody/snare)
+  const highEnd = Math.ceil(8000 / freqPerBin)    // 2000-8000 Hz (hats/cymbals)
+
+  // Simple DFT-based energy estimation per band
+  for (let frame = 0; frame < totalFrames; frame++) {
+    const start = frame * hopSize
+    let bassE = 0, midE = 0, highE = 0
+
+    // Compute energy using time-domain approximation (faster than full FFT)
+    // For bass: low-pass by averaging large windows
+    // For simplicity, use energy in windowed segments
+    for (let j = 0; j < fftSize; j++) {
+      const v = channel[start + j] || 0
+      const vSq = v * v
+      // Rough band splitting using sample position modulation
+      bassE += vSq
+    }
+
+    // Use spectral flux approximation: compute energy differences
+    // Simple windowed energy for the whole band first
+    const windowEnergy = bassE / fftSize
+    bassEnergies.push(windowEnergy)
+
+    // Compute high-frequency energy (difference between adjacent samples = derivative = high freq)
+    let hfe = 0
+    for (let j = 1; j < fftSize; j++) {
+      const diff = (channel[start + j] || 0) - (channel[start + j - 1] || 0)
+      hfe += diff * diff
+    }
+    highEnergies.push(hfe / fftSize)
+
+    // Mid-frequency: second derivative approximation
+    let mfe = 0
+    for (let j = 2; j < fftSize; j++) {
+      const d2 = (channel[start + j] || 0) - 2 * (channel[start + j - 1] || 0) + (channel[start + j - 2] || 0)
+      mfe += d2 * d2
+    }
+    midEnergies.push(mfe / fftSize)
+  }
+
+  // Detect onsets via spectral flux in each band
+  const onsets = []
+  const windowAvg = 8 // frames for local average
+
+  for (let i = windowAvg; i < totalFrames - 1; i++) {
+    const timeMs = (i * hopSize * 1000) / sr
+
+    // Local average for adaptive threshold
+    let localBass = 0, localMid = 0, localHigh = 0
+    for (let w = i - windowAvg; w < i; w++) {
+      localBass += bassEnergies[w]
+      localMid += midEnergies[w]
+      localHigh += highEnergies[w]
+    }
+    localBass /= windowAvg
+    localMid /= windowAvg
+    localHigh /= windowAvg
+
+    const bassFlux = bassEnergies[i] - bassEnergies[i - 1]
+    const midFlux = midEnergies[i] - midEnergies[i - 1]
+    const highFlux = highEnergies[i] - highEnergies[i - 1]
+
+    // Peak detection with adaptive threshold
+    const bassThresh = localBass * 1.8
+    const midThresh = localMid * 2.0
+    const highThresh = localHigh * 2.2
+
+    let strength = 0
+    let band = ""
+
+    if (bassFlux > 0 && bassEnergies[i] > bassThresh && bassEnergies[i] > bassEnergies[i - 1] && bassEnergies[i] > bassEnergies[i + 1]) {
+      strength += 3
+      band = "bass"
+    }
+    if (midFlux > 0 && midEnergies[i] > midThresh && midEnergies[i] > midEnergies[i - 1] && midEnergies[i] > midEnergies[i + 1]) {
+      strength += 2
+      band = band || "mid"
+    }
+    if (highFlux > 0 && highEnergies[i] > highThresh && highEnergies[i] > highEnergies[i - 1] && highEnergies[i] > highEnergies[i + 1]) {
+      strength += 1
+      band = band || "high"
+    }
+
+    if (strength > 0) {
+      // Avoid duplicates within 80ms
+      if (onsets.length === 0 || timeMs - onsets[onsets.length - 1].time > 80) {
+        onsets.push({ time: timeMs, strength, band })
+      }
+    }
+  }
+
+  return onsets
+}
+
+function quantizeOnsets(onsets, currentBpm) {
+  const beat = 60000 / currentBpm
+  const halfBeat = beat / 2
+  const quarterBeat = beat / 4
+
+  return onsets.map(onset => {
+    // Snap to nearest 1/4 beat
+    const nearestQuarter = Math.round(onset.time / quarterBeat) * quarterBeat
+    // Check if it's on a beat, half-beat, or quarter-beat
+    const beatPhase = (nearestQuarter % beat) / beat
+    let gridType = "quarter"
+    if (Math.abs(beatPhase) < 0.01 || Math.abs(beatPhase - 1) < 0.01) gridType = "beat"
+    else if (Math.abs(beatPhase - 0.5) < 0.01) gridType = "half"
+
+    return {
+      time: nearestQuarter,
+      strength: onset.strength,
+      band: onset.band,
+      gridType
+    }
+  })
+}
+
+function generateItemsFromBeats(quantized, difficulty, durationMs) {
+  // Difficulty parameters
+  const config = {
+    easy: { density: 0.4, ghostRate: 0.08, powerRate: 0.04, minGap: 600, laneChange: 0.25 },
+    normal: { density: 0.6, ghostRate: 0.14, powerRate: 0.05, minGap: 400, laneChange: 0.4 },
+    hard: { density: 0.8, ghostRate: 0.20, powerRate: 0.06, minGap: 250, laneChange: 0.55 },
+    expert: { density: 0.95, ghostRate: 0.28, powerRate: 0.07, minGap: 150, laneChange: 0.7 }
+  }[difficulty] || config.normal
+
+  // Filter by density — keep stronger beats first
+  const sorted = [...quantized].sort((a, b) => b.strength - a.strength)
+  const keepCount = Math.floor(sorted.length * config.density)
+  const kept = new Set(sorted.slice(0, keepCount).map(o => o.time))
+  const filtered = quantized.filter(o => kept.has(o.time))
+
+  // Remove items too close together
+  const spaced = []
+  for (const onset of filtered) {
+    if (onset.time < 500) continue // skip first 0.5s
+    if (onset.time > durationMs - 500) continue // skip last 0.5s
+    if (spaced.length > 0 && onset.time - spaced[spaced.length - 1].time < config.minGap) continue
+    spaced.push(onset)
+  }
+
+  // Assign lanes using musical patterns
+  const items = []
+  let currentLane = 1 // start in middle
+  let patternIndex = 0
+
+  // Lane pattern generators
+  const patterns = [
+    // zigzag: 0,1,2,1,0,1,2...
+    (i) => [0, 1, 2, 1][i % 4],
+    // sweep up: 0,1,2,2,1,0
+    (i) => [0, 1, 2, 2, 1, 0][i % 6],
+    // hold center with occasional moves
+    (i) => i % 3 === 0 ? (i % 6 < 3 ? 0 : 2) : 1,
+    // alternating edges: 0,2,0,2 with center rest
+    (i) => [0, 2, 1, 0, 2, 1][i % 6],
+    // step down: 0,0,1,1,2,2
+    (i) => Math.floor((i % 6) / 2),
+  ]
+
+  // Pick pattern, change every 8-16 beats
+  let currentPattern = patterns[0]
+  let patternCounter = 0
+  let nextPatternChange = 8 + Math.floor(Math.random() * 8)
+
+  // First pass: assign lanes
+  for (let i = 0; i < spaced.length; i++) {
+    patternCounter++
+    if (patternCounter >= nextPatternChange) {
+      patternCounter = 0
+      nextPatternChange = 8 + Math.floor(Math.random() * 8)
+      currentPattern = patterns[Math.floor(Math.random() * patterns.length)]
+      patternIndex = 0
+    }
+
+    // Decide lane
+    if (Math.random() < config.laneChange) {
+      currentLane = currentPattern(patternIndex)
+    }
+    patternIndex++
+
+    spaced[i].lane = currentLane
+  }
+
+  // Second pass: assign types
+  // Mark ghost candidates: strong bass beats
+  const ghostCandidates = new Set()
+  for (let i = 0; i < spaced.length; i++) {
+    if (spaced[i].strength >= 3 && spaced[i].band === "bass" && Math.random() < config.ghostRate * 3) {
+      ghostCandidates.add(i)
+    }
+  }
+
+  // Ensure we don't have too many ghosts
+  const maxGhosts = Math.floor(spaced.length * config.ghostRate)
+  const ghostIndices = [...ghostCandidates].slice(0, maxGhosts)
+  const ghostSet = new Set(ghostIndices)
+
+  // Place power-ups before ghost clusters
+  const powerSet = new Set()
+  for (const gi of ghostSet) {
+    // Look back 3-6 items for a good power-up spot
+    for (let back = 3; back <= 6 && gi - back >= 0; back++) {
+      const candidate = gi - back
+      if (!ghostSet.has(candidate) && !powerSet.has(candidate)) {
+        if (Math.random() < config.powerRate * 8) {
+          powerSet.add(candidate)
+        }
+        break
+      }
+    }
+  }
+
+  // Cap power-ups
+  const maxPowers = Math.max(2, Math.floor(spaced.length * config.powerRate))
+  const powerIndicesArr = [...powerSet].slice(0, maxPowers)
+  const finalPowerSet = new Set(powerIndicesArr)
+
+  // Build final items
+  for (let i = 0; i < spaced.length; i++) {
+    let type = "pellet"
+    if (ghostSet.has(i)) type = "ghost"
+    else if (finalPowerSet.has(i)) type = "power"
+
+    items.push({
+      time: Math.round(spaced[i].time),
+      lane: spaced[i].lane,
+      type
+    })
+  }
+
+  // Ensure there are enough ghosts and at least 2 power-ups even on easy
+  const ghostCount = items.filter(i => i.type === "ghost").length
+  const powerCount = items.filter(i => i.type === "power").length
+
+  if (ghostCount < 3 && items.length > 10) {
+    // Convert some strong pellets to ghosts
+    for (let i = 0; i < items.length && ghostCount < 3; i++) {
+      if (items[i].type === "pellet" && i > 5 && i % 7 === 0) {
+        items[i].type = "ghost"
+      }
+    }
+  }
+
+  if (powerCount < 2 && items.length > 8) {
+    // Add power-ups before first ghost
+    const firstGhost = items.findIndex(i => i.type === "ghost")
+    if (firstGhost > 2) {
+      items[firstGhost - 2].type = "power"
+    }
+    if (firstGhost > 5) {
+      // Add another power-up later
+      const secondGhost = items.findIndex((item, idx) => item.type === "ghost" && idx > firstGhost)
+      if (secondGhost > 2) {
+        items[secondGhost - 2].type = "power"
+      }
+    }
+  }
+
+  return items
+}
+
+function generateRecordPath(items, durationMs) {
+  // Generate a smooth lane movement path from items
+  const path = []
+  const step = 40 // ms per sample, matching recording resolution
+  let currentLane = 1
+
+  // Build a lane schedule from items
+  const laneSchedule = []
+  for (const item of items) {
+    laneSchedule.push({ time: item.time, lane: item.lane })
+  }
+
+  for (let t = 0; t <= durationMs; t += step) {
+    // Find which lane we should be at time t
+    // Look ahead — we need to be in position BEFORE the item arrives
+    const lookAhead = 500 // ms to prepare
+    let targetLane = currentLane
+
+    for (const sched of laneSchedule) {
+      if (sched.time >= t && sched.time <= t + lookAhead) {
+        targetLane = sched.lane
+        break
+      }
+    }
+
+    // Smooth transition
+    if (targetLane !== currentLane) {
+      currentLane = targetLane
+    }
+
+    path.push({ time: t, lane: currentLane })
+  }
+
+  return path
+}
+
 function buildObjectsFromItems(items) {
   return items.map((item, index) => ({
     id: `${index}-${item.time}`,
@@ -648,23 +1031,82 @@ function resetGameState() {
   pacman.lane = 1
   pacman.targetLane = 1
   pacman.y = laneToY(1)
+  particles.length = 0
+  shockwaves.length = 0
+  comboPopups.length = 0
+  screenShake = 0
+  screenShakeIntensity = 0
   updateHud()
 }
 
-function startGame() {
+let countdownActive = false
+
+async function startGameWithCountdown() {
   if (!currentSong) return
   if (gameState === "playing") return
   if (gameState === "gameover") return
+  if (countdownActive) return
   clearGameOver()
   resetGameState()
   objects = buildObjectsFromItems(currentSong.items)
   bpm = currentSong.bpm
   beatMs = 60000 / bpm
+
+  // Disable buttons during countdown
+  startButton.disabled = true
+  pauseButton.disabled = true
+  countdownActive = true
+  gameState = "countdown"
+
+  // Draw countdown on canvas
+  const counts = ["3", "2", "1", "GO!"]
+  for (let i = 0; i < counts.length; i++) {
+    if (!countdownActive) break // cancelled by reset
+    drawTrack()
+    drawPacman()
+    // Draw countdown text
+    const text = counts[i]
+    const progress = i / counts.length
+    ctx.save()
+    ctx.fillStyle = text === "GO!" ? "#FFFF00" : "#FFFFFF"
+    ctx.font = `bold ${text === "GO!" ? 72 : 96}px 'Roboto', sans-serif`
+    ctx.textAlign = "center"
+    ctx.textBaseline = "middle"
+    ctx.shadowColor = text === "GO!" ? "rgba(255,255,0,0.8)" : "rgba(255,255,255,0.5)"
+    ctx.shadowBlur = 20
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
+    ctx.shadowBlur = 0
+    // Sub-text
+    ctx.fillStyle = "rgba(255,255,255,0.5)"
+    ctx.font = "18px 'Roboto', sans-serif"
+    ctx.fillText("请准备好姿势", canvas.width / 2, canvas.height / 2 + 50)
+    ctx.restore()
+    setStatus(text === "GO!" ? "开始！" : `准备... ${text}`)
+    await new Promise(r => setTimeout(r, text === "GO!" ? 500 : 800))
+  }
+
+  // Check if cancelled during countdown
+  if (!countdownActive) {
+    startButton.disabled = false
+    pauseButton.disabled = false
+    return
+  }
+
+  countdownActive = false
+  startButton.disabled = false
+  pauseButton.disabled = false
+
+  // Actually start the game
   startTime = performance.now()
   audioOffsetMs = 0
   gameState = "playing"
   setStatus("节奏进行中")
   playAudio(0)
+}
+
+// Direct start without countdown (for internal use)
+function startGame() {
+  startGameWithCountdown()
 }
 
 function pauseGame() {
@@ -687,6 +1129,7 @@ function resumeGame() {
 
 function resetGame() {
   gameState = "idle"
+  countdownActive = false
   setStatus("按空格开始")
   resetGameState()
   stopAudio()
@@ -694,22 +1137,58 @@ function resetGame() {
 }
 
 function drawTrack() {
-  ctx.fillStyle = "#05070f"
+  // Classic arcade black background
+  ctx.fillStyle = "#000000"
   ctx.fillRect(0, 0, canvas.width, canvas.height)
-  for (let lane = 0; lane < lanes; lane += 1) {
-    const y = laneToY(lane)
-    ctx.strokeStyle = lane === 1 ? "rgba(120,150,255,0.7)" : "rgba(60,75,130,0.6)"
-    ctx.lineWidth = 4
+
+  // Draw lane boundaries as classic blue maze walls (double lines)
+  const wallColor = "#2121DE" // classic Pac-Man blue
+  const wallHighlight = "#4242FF"
+  const laneTop = laneToY(0) - laneHeight / 2
+  const laneBottom = laneToY(2) + laneHeight / 2
+
+  // Outer walls
+  ctx.strokeStyle = wallColor
+  ctx.lineWidth = 3
+  // Top wall
+  ctx.beginPath()
+  ctx.moveTo(60, laneTop)
+  ctx.lineTo(canvas.width - 20, laneTop)
+  ctx.stroke()
+  // Bottom wall
+  ctx.beginPath()
+  ctx.moveTo(60, laneBottom)
+  ctx.lineTo(canvas.width - 20, laneBottom)
+  ctx.stroke()
+
+  // Inner lane dividers (dashed, thinner)
+  ctx.strokeStyle = wallHighlight
+  ctx.lineWidth = 1
+  ctx.setLineDash([8, 12])
+  for (let lane = 0; lane < lanes - 1; lane++) {
+    const divY = laneToY(lane) + laneHeight / 2
     ctx.beginPath()
-    ctx.moveTo(80, y)
-    ctx.lineTo(canvas.width - 40, y)
+    ctx.moveTo(80, divY)
+    ctx.lineTo(canvas.width - 40, divY)
     ctx.stroke()
   }
-  ctx.strokeStyle = "rgba(255,255,255,0.12)"
-  ctx.lineWidth = 2
+  ctx.setLineDash([])
+
+  // Small dot grid pattern (arcade-style background detail)
+  ctx.fillStyle = "rgba(33, 33, 222, 0.15)"
+  for (let x = 80; x < canvas.width - 40; x += 32) {
+    for (let lane = 0; lane < lanes; lane++) {
+      const y = laneToY(lane)
+      ctx.fillRect(x - 1, y - 1, 2, 2)
+    }
+  }
+
+  // Pac-Man position indicator line
+  ctx.strokeStyle = "rgba(255, 255, 0, 0.15)"
+  ctx.lineWidth = 1
   ctx.beginPath()
-  ctx.moveTo(pacmanX, 20)
-  ctx.lineTo(pacmanX, canvas.height - 20)
+  ctx.moveTo(pacmanX, laneTop)
+  ctx.lineTo(pacmanX, laneBottom)
   ctx.stroke()
 }
 
@@ -723,53 +1202,298 @@ function drawPacman() {
   const targetY = laneToY(pacman.targetLane)
   pacman.y += (targetY - pacman.y) * 0.2
   pacman.lane = Math.round((pacman.y - 60) / laneHeight)
-  const angle = pacman.mouth
-  ctx.translate(pacmanX, pacman.y)
-  ctx.fillStyle = "#ffe559"
-  ctx.beginPath()
-  ctx.moveTo(0, 0)
-  ctx.arc(0, 0, pacmanRadius, angle, Math.PI * 2 - angle)
-  ctx.closePath()
-  ctx.fill()
+
+  // Classic Pac-Man pixel sprite (13x13, 0=empty 1=yellow 2=black/eye)
+  // Two animation frames: mouth open and mouth closed
+  const mouthOpen = pacman.mouth > 0.15
+  const sprite = mouthOpen ? [
+    // Mouth open frame (facing right)
+    [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+    [1, 1, 1, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0],
+    [1, 1, 1, 2, 2, 1, 1, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+  ] : [
+    // Mouth closed frame (full circle)
+    [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+    [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+    [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+  ]
+
+  const px = 4 // each pixel = 4x4 canvas pixels
+  const spriteW = sprite[0].length
+  const spriteH = sprite.length
+  const offsetX = pacmanX - (spriteW * px) / 2
+  const offsetY = pacman.y - (spriteH * px) / 2
+
+  ctx.imageSmoothingEnabled = false
+  for (let row = 0; row < spriteH; row++) {
+    for (let col = 0; col < spriteW; col++) {
+      const val = sprite[row][col]
+      if (val === 0) continue
+      ctx.fillStyle = val === 1 ? "#FFFF00" : "#000000"
+      ctx.fillRect(offsetX + col * px, offsetY + row * px, px, px)
+    }
+  }
+
   ctx.restore()
+}
+
+function spawnPelletEffect(x, y) {
+  for (let i = 0; i < 12; i++) {
+    const angle = (Math.PI * 2 * i) / 12 + (Math.random() - 0.5) * 0.4
+    const speed = 1.5 + Math.random() * 2.5
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.025 + Math.random() * 0.015,
+      radius: 2 + Math.random() * 3,
+      color: Math.random() > 0.3 ? "#ffd36a" : "#fff4b0"
+    })
+  }
+}
+
+function spawnPowerEffect(x, y) {
+  shockwaves.push({ x, y, radius: 10, maxRadius: 60, life: 1, color: "rgba(126, 242, 255," })
+  for (let i = 0; i < 20; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const speed = 2 + Math.random() * 3
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.018 + Math.random() * 0.012,
+      radius: 3 + Math.random() * 4,
+      color: Math.random() > 0.4 ? "#7ef2ff" : "#b8f9ff"
+    })
+  }
+}
+
+function spawnGhostEatenEffect(x, y) {
+  shockwaves.push({ x, y, radius: 8, maxRadius: 50, life: 1, color: "rgba(107, 214, 255," })
+  for (let i = 0; i < 18; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const speed = 2.5 + Math.random() * 3
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.02 + Math.random() * 0.01,
+      radius: 2.5 + Math.random() * 3.5,
+      color: Math.random() > 0.5 ? "#6bd6ff" : "#a0e8ff"
+    })
+  }
+}
+
+function spawnGhostDamageEffect(x, y) {
+  screenShake = performance.now()
+  screenShakeIntensity = 6
+  shockwaves.push({ x, y, radius: 6, maxRadius: 45, life: 1, color: "rgba(255, 80, 123," })
+  for (let i = 0; i < 16; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const speed = 2 + Math.random() * 3
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.022 + Math.random() * 0.012,
+      radius: 2.5 + Math.random() * 3,
+      color: Math.random() > 0.4 ? "#ff507b" : "#ff8ba0"
+    })
+  }
+}
+
+function spawnComboPopup(x, y, text, color) {
+  comboPopups.push({ x, y, text, color, life: 1, decay: 0.02 })
+}
+
+function updateAndDrawParticles() {
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i]
+    p.x += p.vx
+    p.y += p.vy
+    p.vx *= 0.96
+    p.vy *= 0.96
+    p.life -= p.decay
+    if (p.life <= 0) {
+      particles.splice(i, 1)
+      continue
+    }
+    ctx.globalAlpha = p.life
+    ctx.fillStyle = p.color
+    ctx.shadowColor = p.color
+    ctx.shadowBlur = 8
+    ctx.beginPath()
+    ctx.arc(p.x, p.y, p.radius * p.life, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.shadowBlur = 0
+
+  // Shockwaves
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const s = shockwaves[i]
+    s.radius += (s.maxRadius - s.radius) * 0.12
+    s.life -= 0.03
+    if (s.life <= 0) {
+      shockwaves.splice(i, 1)
+      continue
+    }
+    ctx.globalAlpha = s.life * 0.6
+    ctx.strokeStyle = s.color + `${s.life * 0.8})`
+    ctx.lineWidth = 2 + s.life * 2
+    ctx.beginPath()
+    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+
+  // Combo popups
+  for (let i = comboPopups.length - 1; i >= 0; i--) {
+    const c = comboPopups[i]
+    c.y -= 0.8
+    c.life -= c.decay
+    if (c.life <= 0) {
+      comboPopups.splice(i, 1)
+      continue
+    }
+    ctx.globalAlpha = c.life
+    ctx.fillStyle = c.color
+    ctx.font = "bold 16px Roboto"
+    ctx.textAlign = "center"
+    ctx.fillText(c.text, c.x, c.y)
+    ctx.textAlign = "start"
+  }
+
+  ctx.globalAlpha = 1
 }
 
 function drawObject(object, x) {
   const y = laneToY(object.lane)
+
   if (object.type === "pellet") {
-    ctx.fillStyle = "#ffd36a"
+    // Classic small white pellet dot
+    ctx.fillStyle = "#FFCC99"
     ctx.beginPath()
-    ctx.arc(x, y, 10, 0, Math.PI * 2)
+    ctx.arc(x, y, 4, 0, Math.PI * 2)
     ctx.fill()
   } else if (object.type === "power") {
-    ctx.fillStyle = "#7ef2ff"
-    ctx.beginPath()
-    ctx.arc(x, y, 14, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.strokeStyle = "rgba(126, 242, 255, 0.6)"
-    ctx.lineWidth = 3
-    ctx.beginPath()
-    ctx.arc(x, y, 18, 0, Math.PI * 2)
-    ctx.stroke()
+    // Classic large flashing power pellet
+    const flash = Math.floor(performance.now() / 200) % 2 === 0
+    if (flash) {
+      ctx.fillStyle = "#FFCC99"
+      ctx.beginPath()
+      ctx.arc(x, y, 10, 0, Math.PI * 2)
+      ctx.fill()
+    }
   } else if (object.type === "ghost") {
     const powered = isPowered()
-    const pulse = powered ? 0.6 + 0.4 * Math.sin(performance.now() / 180) : 1
+    const size = 14 // half-width of ghost sprite
+    const ghostH = 28
+
     ctx.save()
-    ctx.fillStyle = powered ? `rgba(107, 214, 255, ${pulse})` : "#ff507b"
-    ctx.shadowColor = powered ? "rgba(107, 214, 255, 0.6)" : "transparent"
-    ctx.shadowBlur = powered ? 12 : 0
-    ctx.beginPath()
-    ctx.arc(x, y - 6, 14, Math.PI, 0)
-    ctx.lineTo(x + 14, y + 12)
-    ctx.lineTo(x - 14, y + 12)
-    ctx.closePath()
-    ctx.fill()
-    ctx.shadowBlur = 0
-    ctx.fillStyle = powered ? "rgba(255,255,255,0.9)" : "#fff"
-    ctx.beginPath()
-    ctx.arc(x - 5, y - 2, 4, 0, Math.PI * 2)
-    ctx.arc(x + 5, y - 2, 4, 0, Math.PI * 2)
-    ctx.fill()
+    ctx.translate(x, y)
+
+    if (powered) {
+      // Scared ghost: classic blue with flash when ending
+      const remaining = Math.max(0, powerUntil - performance.now())
+      const flashing = remaining < 2000 && Math.floor(performance.now() / 200) % 2 === 0
+      ctx.fillStyle = flashing ? "#FFFFFF" : "#2121FF"
+
+      // Dome head
+      ctx.beginPath()
+      ctx.arc(0, -4, size, Math.PI, 0)
+      // Body
+      ctx.lineTo(size, ghostH / 2 - 4)
+      // Wavy bottom (3 waves)
+      const waveW = (size * 2) / 3
+      for (let w = 0; w < 3; w++) {
+        const wx = size - w * waveW
+        ctx.lineTo(wx - waveW / 2, ghostH / 2 - 4 + 5)
+        ctx.lineTo(wx - waveW, ghostH / 2 - 4)
+      }
+      ctx.closePath()
+      ctx.fill()
+
+      // Scared eyes (simple lines)
+      ctx.fillStyle = flashing ? "#FF0000" : "#FFCC99"
+      ctx.fillRect(-6, -4, 3, 3)
+      ctx.fillRect(3, -4, 3, 3)
+
+      // Squiggly mouth
+      ctx.strokeStyle = flashing ? "#FF0000" : "#FFCC99"
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(-7, 4)
+      for (let sx = -7; sx <= 7; sx += 3.5) {
+        ctx.lineTo(sx + 1.75, sx % 7 === 0 ? 6 : 2)
+      }
+      ctx.stroke()
+    } else {
+      // Normal ghost: pick color based on object position
+      const ghostColors = ["#FF0000", "#FFB8FF", "#00FFFF", "#FFB852"] // Blinky, Pinky, Inky, Clyde
+      const colorIndex = Math.abs(Math.floor(object.time / 500)) % 4
+      ctx.fillStyle = ghostColors[colorIndex]
+
+      // Dome head
+      ctx.beginPath()
+      ctx.arc(0, -4, size, Math.PI, 0)
+      // Body sides
+      ctx.lineTo(size, ghostH / 2 - 4)
+      // Wavy bottom skirt (3 tentacles)
+      const waveW = (size * 2) / 3
+      const wavePhase = performance.now() / 200
+      for (let w = 0; w < 3; w++) {
+        const wx = size - w * waveW
+        const wobble = Math.sin(wavePhase + w) * 2
+        ctx.lineTo(wx - waveW / 2, ghostH / 2 - 4 + 5 + wobble)
+        ctx.lineTo(wx - waveW, ghostH / 2 - 4)
+      }
+      ctx.closePath()
+      ctx.fill()
+
+      // Eyes: white sclera with blue pupils
+      // Left eye
+      ctx.fillStyle = "#FFFFFF"
+      ctx.beginPath()
+      ctx.ellipse(-5, -4, 5, 6, 0, 0, Math.PI * 2)
+      ctx.fill()
+      // Right eye
+      ctx.beginPath()
+      ctx.ellipse(5, -4, 5, 6, 0, 0, Math.PI * 2)
+      ctx.fill()
+      // Pupils (looking left = toward Pac-Man)
+      ctx.fillStyle = "#2121DE"
+      ctx.beginPath()
+      ctx.arc(-7, -3, 2.5, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(3, -3, 2.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
     ctx.restore()
   }
 }
@@ -796,6 +1520,8 @@ function updateObjects(elapsed) {
           pellets += 1
           combo += 1
           const pelletScore = isPowered() ? 40 : 20
+          spawnPelletEffect(pacmanX, laneToY(object.lane))
+          if (combo > 1) spawnComboPopup(pacmanX + 30, laneToY(object.lane) - 15, `${combo}x`, "#ffd36a")
           score += pelletScore + combo * 2
         }
       } else if (object.type === "power") {
@@ -805,6 +1531,7 @@ function updateObjects(elapsed) {
           combo += 1
           powerUntil = now + powerDuration
           score += 20 + combo * 2
+          spawnPowerEffect(pacmanX, laneToY(object.lane))
           setStatus("大力丸！10 秒可吃幽灵")
         }
       } else if (object.type === "ghost") {
@@ -814,6 +1541,8 @@ function updateObjects(elapsed) {
             object.collected = true
             combo += 1
             score += 40 + combo * 2
+            spawnGhostEatenEffect(pacmanX, laneToY(object.lane))
+            spawnComboPopup(pacmanX + 30, laneToY(object.lane) - 15, `+${40 + combo * 2}`, "#6bd6ff")
             setStatus("吃掉幽灵")
           } else if (isInvincible()) {
             return
@@ -821,6 +1550,7 @@ function updateObjects(elapsed) {
             combo = 0
             lives -= 1
             invincibleUntil = now + invincibleDuration
+            spawnGhostDamageEffect(pacmanX, laneToY(object.lane))
             score = Math.max(0, score - 50)
             if (lives <= 0) {
               setGameOver("生命耗尽")
@@ -835,14 +1565,28 @@ function updateObjects(elapsed) {
 }
 
 function updateGame() {
+  // Screen shake offset
+  let shakeX = 0, shakeY = 0
+  if (screenShake > 0 && performance.now() - screenShake < 300) {
+    const t = (performance.now() - screenShake) / 300
+    const intensity = screenShakeIntensity * (1 - t)
+    shakeX = (Math.random() - 0.5) * intensity * 2
+    shakeY = (Math.random() - 0.5) * intensity * 2
+  }
+  ctx.save()
+  ctx.translate(shakeX, shakeY)
   drawTrack()
   drawPacman()
   if (gameState !== "playing") {
+    updateAndDrawParticles()
+    ctx.restore()
     updateHud()
     return
   }
   const elapsed = performance.now() - startTime
   updateObjects(elapsed)
+  updateAndDrawParticles()
+  ctx.restore()
   updateHud()
   const durationMs = currentSong?.durationMs ?? editorDurationMs
   const finished = objects.every((object) => object.passed || object.collected || object.hit)
@@ -1158,13 +1902,22 @@ async function mergeLegacySongs() {
   try {
     const legacySongs = JSON.parse(legacyRaw)
     if (Array.isArray(legacySongs)) {
+      let merged = 0
       legacySongs.forEach((legacy) => {
         if (!songs.some((song) => song.id === legacy.id)) {
           songs.push(legacy)
+          merged++
         }
       })
+      // Migration complete — remove legacy data so deleted songs don't resurrect
+      localStorage.removeItem(storageKey)
+      if (merged > 0) {
+        console.log(`迁移了 ${merged} 首旧曲目，已清除 localStorage`)
+      }
     }
   } catch (error) {
+    // If parse fails, still remove the corrupted data
+    localStorage.removeItem(storageKey)
     return
   }
 }
@@ -1173,26 +1926,32 @@ async function mergeLegacySongs() {
 async function loadSongs() {
   try {
     songs = await getAllSongs()
+    console.log(`[加载] IndexedDB: ${songs.length} 首曲目`)
   } catch (error) {
     songs = []
   }
   const fileSongs = await readSongsFromFileSystem()
   if (Array.isArray(fileSongs) && fileSongs.length) {
+    let added = 0
     fileSongs.forEach((fileSong) => {
       if (!songs.some((song) => song.id === fileSong.id)) {
         songs.push(fileSong)
+        added++
       }
     })
-    await Promise.all(songs.map((song) => putSong(song)))
+    if (added > 0) {
+      console.log(`[加载] 文件系统: 新增 ${added} 首`)
+      await Promise.all(songs.map((song) => putSong(song)))
+    }
   }
   await mergeLegacySongs()
-  // 加载文件夹曲谱包
+  // 加载文件夹曲谱包 — always refresh from disk (remove old folder entries first)
+  songs = songs.filter(song => song.source !== "folder")
   const folderPacks = await loadFolderPacks()
   folderPacks.forEach((pack) => {
-    if (!songs.some((song) => song.id === pack.id)) {
-      songs.push(pack)
-    }
+    songs.push(pack)
   })
+  console.log(`[加载] 文件夹曲谱包: ${folderPacks.length} 首`)
   if (!songs.length) {
     const defaultSong = {
       id: String(Date.now()),
@@ -1206,6 +1965,7 @@ async function loadSongs() {
     }
     songs = [defaultSong]
   }
+  console.log(`[加载] 总计: ${songs.length} 首曲目`)
   await saveSongs()
 }
 
@@ -1342,7 +2102,9 @@ function saveSongFromEditor() {
 async function removeSong(songId) {
   songs = songs.filter((song) => song.id !== songId)
   await deleteSongById(songId)
-  await writeSongsToFileSystem(songs)
+  // Only persist non-folder songs to filesystem (same filter as saveSongs)
+  const persistSongs = songs.filter((song) => song.source !== "folder")
+  await writeSongsToFileSystem(persistSongs)
   renderSongSelect()
   renderSongList()
   if (selectedSongId === songId) {
@@ -1434,7 +2196,7 @@ function bindEvents() {
   })
   startButton.addEventListener("click", () => {
     if (gameState === "paused") resumeGame()
-    else startGame()
+    else startGameWithCountdown()
   })
   pauseButton.addEventListener("click", pauseGame)
   resetButton.addEventListener("click", resetGame)
@@ -1450,11 +2212,12 @@ function bindEvents() {
     playingTitle.textContent = currentSong.name
     playingMeta.textContent = `${currentSong.bpm} BPM · ${Math.round(currentSong.durationMs / 1000)}s`
     showView("gameView")
-    startGame()
+    startGameWithCountdown()
   })
   saveSongButton.addEventListener("click", saveSongFromEditor)
   loadSongButton.addEventListener("click", () => loadSongToEditor(songSelect.value))
   newSongButton.addEventListener("click", createNewSong)
+  autoGenerateButton.addEventListener("click", autoGenerateChart)
   document.querySelectorAll(".nav-button").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view))
   })
@@ -1493,7 +2256,7 @@ function bindEvents() {
   })
   restartButton.addEventListener("click", () => {
     clearGameOver()
-    startGame()
+    startGameWithCountdown()
   })
   backToEditorButton.addEventListener("click", () => {
     clearGameOver()
@@ -1515,10 +2278,12 @@ function bindEvents() {
     const key = event.key.toLowerCase()
     if (activeViewId === "gameView") {
       if (gameState === "gameover") return
-      if (key === " ") {
+      if (key === " " && !event.repeat) {
+        event.preventDefault()
         if (gameState === "playing") pauseGame()
         else if (gameState === "paused") resumeGame()
-        else startGame()
+        else if (gameState === "countdown") return
+        else startGameWithCountdown()
         return
       }
       if (["w", "s", "x"].includes(key)) {

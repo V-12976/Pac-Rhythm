@@ -86,60 +86,82 @@
       </section>
 
       <section class="view" id="gameView">
-        <div class="card game-card">
-          <div class="game-header">
-            <div>
-              <div class="card-title" id="playingTitle">演奏中</div>
-              <div class="card-subtitle" id="playingMeta">节奏准备</div>
-            </div>
-            <div class="status-chip" id="statusText">按空格开始</div>
+        <!-- Top bar: song info + status -->
+        <div class="game-topbar">
+          <div class="game-topbar-left">
+            <div class="game-song-title" id="playingTitle">演奏中</div>
+            <div class="game-song-meta" id="playingMeta">节奏准备</div>
           </div>
-          <div class="pose-panel">
-            <div class="pose-card">
-              <div class="pose-header">
-                <div>
-                  <div class="card-title">体感控制</div>
-                  <div class="card-subtitle">双手上 / 平 / 下 控制轨道</div>
-                </div>
-                <div class="pose-controls">
-                  <select id="cameraSelect"></select>
-                  <label class="toggle">
-                    <input type="checkbox" id="gestureStartToggle" />
-                    <span>手势启动</span>
-                  </label>
-                  <div class="pose-status" id="poseStatus">手势：关闭</div>
-                  <button class="outlined-button" id="refreshCameraButton">刷新</button>
-                </div>
-              </div>
-              <div class="pose-preview">
-                <video id="poseVideo" playsinline></video>
-                <canvas id="poseCanvas"></canvas>
-              </div>
+          <div class="game-status-chip" id="statusText">按空格开始</div>
+          <div class="game-topbar-right">
+            <button class="game-control-btn primary" id="startButton">▶ 开始</button>
+            <button class="game-control-btn" id="pauseButton">⏸ 暂停</button>
+            <button class="game-control-btn ghost-btn" id="resetButton">↺ 重置</button>
+          </div>
+        </div>
+
+        <!-- Main game area: HUD left | Canvas center | Camera right -->
+        <div class="game-main">
+          <!-- Left HUD Panel -->
+          <div class="game-hud-panel">
+            <div class="hud-block hud-score">
+              <div class="hud-label">分数</div>
+              <div class="hud-value" id="scoreValue">0</div>
+            </div>
+            <div class="hud-block hud-combo">
+              <div class="hud-label">连击</div>
+              <div class="hud-value" id="comboValue">0</div>
+            </div>
+            <div class="hud-block hud-life">
+              <div class="hud-label">生命</div>
+              <div class="hud-hearts" id="lifeValue">❤❤❤</div>
+            </div>
+            <div class="hud-block hud-pellet">
+              <div class="hud-label">豆子</div>
+              <div class="hud-value" id="pelletValue">0</div>
+            </div>
+            <div class="hud-block hud-power">
+              <div class="hud-label">强化</div>
+              <div class="hud-value" id="powerValue">无</div>
             </div>
           </div>
-          <div class="stage">
+
+          <!-- Center: Game canvas -->
+          <div class="game-stage">
             <canvas id="gameCanvas" width="960" height="360"></canvas>
-            <div class="hud">
-              <div class="hud-item">分数 <span id="scoreValue">0</span></div>
-              <div class="hud-item">连击 <span id="comboValue">0</span></div>
-              <div class="hud-item">豆子 <span id="pelletValue">0</span></div>
-              <div class="hud-item">生命 <span id="lifeValue">❤❤❤</span></div>
-              <div class="hud-item">强化 <span id="powerValue">无</span></div>
-            </div>
-            <div class="controls">
-              <button class="filled-button" id="startButton">开始</button>
-              <button class="outlined-button" id="pauseButton">暂停</button>
-              <button class="text-button" id="resetButton">重置</button>
+            <!-- Game Over Overlay -->
+            <div class="modal hidden" id="gameOverModal">
+              <div class="modal-card">
+                <div class="modal-icon">🎮</div>
+                <div class="modal-title" id="gameOverTitle">对决结束</div>
+                <div class="modal-reason" id="gameOverReason">原因</div>
+                <div class="modal-score-big">
+                  <span class="modal-score-label">最终得分</span>
+                  <span class="modal-score-value" id="gameOverScore">0</span>
+                </div>
+                <div class="modal-actions">
+                  <button class="game-control-btn primary" id="restartButton">🔄 重新开始</button>
+                  <button class="game-control-btn" id="backToEditorButton">✏️ 返回编辑器</button>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="modal hidden" id="gameOverModal">
-            <div class="modal-card">
-              <div class="card-title" id="gameOverTitle">对决结束</div>
-              <div class="card-subtitle" id="gameOverReason">原因</div>
-              <div class="modal-score">最终得分：<span id="gameOverScore">0</span></div>
-              <div class="modal-actions">
-                <button class="filled-button" id="restartButton">重新开始</button>
-                <button class="outlined-button" id="backToEditorButton">返回编辑器</button>
+
+          <!-- Right: Camera/Pose panel -->
+          <div class="game-pose-panel">
+            <div class="pose-preview-game">
+              <video id="poseVideo" playsinline></video>
+              <canvas id="poseCanvas"></canvas>
+              <div class="pose-overlay-label" id="poseStatus">手势：关闭</div>
+            </div>
+            <div class="pose-compact-controls">
+              <select id="cameraSelect" class="pose-select-compact"></select>
+              <div class="pose-btns-row">
+                <label class="toggle-compact">
+                  <input type="checkbox" id="gestureStartToggle" />
+                  <span>手势</span>
+                </label>
+                <button class="pose-btn-compact" id="refreshCameraButton">⟳</button>
               </div>
             </div>
           </div>
@@ -191,6 +213,16 @@
                 <option value="ghost">幽灵</option>
                 <option value="erase">擦除</option>
               </select>
+            </div>
+            <div class="toolbar-group">
+              <div class="group-label">自动谱面</div>
+              <select id="difficultySelect">
+                <option value="easy">简单</option>
+                <option value="normal" selected>普通</option>
+                <option value="hard">困难</option>
+                <option value="expert">专家</option>
+              </select>
+              <button class="filled-button" id="autoGenerateButton">🎵 生成谱面</button>
             </div>
           </div>
           <div class="recorder-panel">
