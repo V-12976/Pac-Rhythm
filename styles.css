@@ -920,6 +920,8 @@ body {
 
 .timeline-container canvas {
   display: block;
+  cursor: pointer;
+  touch-action: none;
 }
 
 .cell {

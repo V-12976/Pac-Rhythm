@@ -112,6 +112,12 @@ let poseLineBottom = 0.65
 let poseDragging = null
 let lastPoseSendAt = 0
 
+// Editor timeline draggable cursor
+let editorCursorMs = 0
+let editorCursorDragging = false
+let editorPreviewPlaying = false
+let editorPreviewStartTime = 0
+
 let audioContext
 let audioBuffer = null
 let audioSource = null
@@ -157,39 +163,94 @@ function updateHud(now = performance.now()) {
 }
 
 function setupPose() {
-  if (typeof Pose === "undefined") return
-  pose = new Pose({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-  })
-  pose.setOptions({
-    modelComplexity: 1,
-    smoothLandmarks: true,
-    minDetectionConfidence: 0.6,
-    minTrackingConfidence: 0.6
-  })
-  pose.onResults(onPoseResults)
+  if (typeof Pose === "undefined") {
+    console.error("[Pose] Pose 类未定义。lib/mediapipe/pose.js 可能未加载。")
+    poseStatus.textContent = "⚠ 体感库未加载，请检查 lib/mediapipe/ 文件"
+    return
+  }
+  if (typeof Camera === "undefined") {
+    console.error("[Pose] Camera 类未定义。lib/mediapipe/camera_utils.js 可能未加载。")
+    poseStatus.textContent = "⚠ 摄像头库未加载，请检查 lib/mediapipe/ 文件"
+    return
+  }
+  try {
+    pose = new Pose({
+      locateFile: (file) => `lib/mediapipe/pose/${file}`
+    })
+    pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    })
+    pose.onResults(onPoseResults)
+    console.log("[Pose] MediaPipe Pose 初始化成功 (本地文件)")
+  } catch (error) {
+    console.error("[Pose] 初始化失败:", error)
+    poseStatus.textContent = "⚠ 体感初始化失败: " + error.message
+  }
 }
 
 // 摄像头枚举与选择，支持多设备切换
 async function enumerateCameras() {
-  if (!navigator.mediaDevices?.enumerateDevices) return
-  const devices = await navigator.mediaDevices.enumerateDevices()
-  const cameras = devices.filter((device) => device.kind === "videoinput")
-  cameraSelect.innerHTML = ""
-  cameras.forEach((camera, index) => {
+  // Check if browser supports camera API
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    cameraSelect.innerHTML = ""
     const option = document.createElement("option")
-    option.value = camera.deviceId
-    option.textContent = camera.label || `摄像头 ${index + 1}`
+    option.value = ""
+    if (!window.isSecureContext) {
+      option.textContent = "⚠ 需要安全上下文 (localhost 或 https)"
+      poseStatus.textContent = "请用 localhost:" + location.port + " 访问"
+      console.warn("[Camera] 不安全上下文，摄像头API不可用")
+    } else {
+      option.textContent = "摄像头API不可用"
+      poseStatus.textContent = "浏览器不支持摄像头API"
+    }
     cameraSelect.appendChild(option)
-  })
-  if (!cameraSelect.value && cameras[0]) {
-    cameraSelect.value = cameras[0].deviceId
+    return
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const cameras = devices.filter((device) => device.kind === "videoinput")
+    cameraSelect.innerHTML = ""
+    if (cameras.length === 0) {
+      const option = document.createElement("option")
+      option.value = ""
+      option.textContent = "未检测到摄像头"
+      cameraSelect.appendChild(option)
+      poseStatus.textContent = "未检测到摄像头"
+      return
+    }
+    cameras.forEach((camera, index) => {
+      const option = document.createElement("option")
+      option.value = camera.deviceId
+      option.textContent = camera.label || `摄像头 ${index + 1}`
+      cameraSelect.appendChild(option)
+    })
+    if (!cameraSelect.value && cameras[0]) {
+      cameraSelect.value = cameras[0].deviceId
+    }
+  } catch (error) {
+    console.warn("摄像头枚举失败:", error)
+    cameraSelect.innerHTML = ""
+    const option = document.createElement("option")
+    option.value = ""
+    option.textContent = "摄像头访问失败"
+    cameraSelect.appendChild(option)
+    poseStatus.textContent = "摄像头访问失败"
   }
 }
 
 // 绑定指定摄像头到 MediaPipe 处理链
 async function startPoseCamera(deviceId) {
-  if (!navigator.mediaDevices?.getUserMedia || !pose) return
+  if (!navigator.mediaDevices?.getUserMedia) {
+    poseStatus.textContent = "摄像头API不可用，请检查浏览器设置"
+    return
+  }
+  if (!pose) {
+    poseStatus.textContent = "⚠ 体感库未加载，请检查网络并刷新"
+    return
+  }
   try {
     if (poseStream) {
       poseStream.getTracks().forEach((track) => track.stop())
@@ -213,9 +274,16 @@ async function startPoseCamera(deviceId) {
       height: 360
     })
     poseCamera.start()
+    poseStatus.textContent = "摄像头已连接"
   } catch (error) {
     console.warn("摄像头启动失败:", error)
-    poseStatus.textContent = "摄像头不可用"
+    if (error.name === "NotAllowedError") {
+      poseStatus.textContent = "摄像头权限被拒绝，请在浏览器设置中允许"
+    } else if (error.name === "NotFoundError") {
+      poseStatus.textContent = "未找到摄像头设备"
+    } else {
+      poseStatus.textContent = "摄像头不可用: " + error.message
+    }
   }
 }
 
@@ -1039,64 +1107,37 @@ function resetGameState() {
   updateHud()
 }
 
-let countdownActive = false
-
-async function startGameWithCountdown() {
+function enterReadyState() {
   if (!currentSong) return
-  if (gameState === "playing") return
+  if (gameState === "playing" || gameState === "ready") return
   if (gameState === "gameover") return
-  if (countdownActive) return
   clearGameOver()
   resetGameState()
   objects = buildObjectsFromItems(currentSong.items)
   bpm = currentSong.bpm
   beatMs = 60000 / bpm
+  gameState = "ready"
+  setStatus("准备就绪 — 按空格或点击 ▶ 开始")
+}
 
-  // Disable buttons during countdown
-  startButton.disabled = true
-  pauseButton.disabled = true
-  countdownActive = true
-  gameState = "countdown"
+function drawReadyScreen() {
+  ctx.save()
+  ctx.fillStyle = "#FFFFFF"
+  ctx.font = "bold 48px 'Roboto', sans-serif"
+  ctx.textAlign = "center"
+  ctx.textBaseline = "middle"
+  ctx.shadowColor = "rgba(255,255,255,0.5)"
+  ctx.shadowBlur = 15
+  ctx.fillText("准备就绪", canvas.width / 2, canvas.height / 2 - 20)
+  ctx.shadowBlur = 0
+  ctx.fillStyle = "rgba(255,255,255,0.5)"
+  ctx.font = "20px 'Roboto', sans-serif"
+  ctx.fillText("请摆好姿势，按 空格 或点击 ▶ 开始", canvas.width / 2, canvas.height / 2 + 30)
+  ctx.restore()
+}
 
-  // Draw countdown on canvas
-  const counts = ["3", "2", "1", "GO!"]
-  for (let i = 0; i < counts.length; i++) {
-    if (!countdownActive) break // cancelled by reset
-    drawTrack()
-    drawPacman()
-    // Draw countdown text
-    const text = counts[i]
-    const progress = i / counts.length
-    ctx.save()
-    ctx.fillStyle = text === "GO!" ? "#FFFF00" : "#FFFFFF"
-    ctx.font = `bold ${text === "GO!" ? 72 : 96}px 'Roboto', sans-serif`
-    ctx.textAlign = "center"
-    ctx.textBaseline = "middle"
-    ctx.shadowColor = text === "GO!" ? "rgba(255,255,0,0.8)" : "rgba(255,255,255,0.5)"
-    ctx.shadowBlur = 20
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
-    ctx.shadowBlur = 0
-    // Sub-text
-    ctx.fillStyle = "rgba(255,255,255,0.5)"
-    ctx.font = "18px 'Roboto', sans-serif"
-    ctx.fillText("请准备好姿势", canvas.width / 2, canvas.height / 2 + 50)
-    ctx.restore()
-    setStatus(text === "GO!" ? "开始！" : `准备... ${text}`)
-    await new Promise(r => setTimeout(r, text === "GO!" ? 500 : 800))
-  }
-
-  // Check if cancelled during countdown
-  if (!countdownActive) {
-    startButton.disabled = false
-    pauseButton.disabled = false
-    return
-  }
-
-  countdownActive = false
-  startButton.disabled = false
-  pauseButton.disabled = false
-
-  // Actually start the game
+function launchFromReady() {
+  if (gameState !== "ready") return
   startTime = performance.now()
   audioOffsetMs = 0
   gameState = "playing"
@@ -1104,9 +1145,12 @@ async function startGameWithCountdown() {
   playAudio(0)
 }
 
-// Direct start without countdown (for internal use)
 function startGame() {
-  startGameWithCountdown()
+  if (gameState === "ready") {
+    launchFromReady()
+  } else {
+    enterReadyState()
+  }
 }
 
 function pauseGame() {
@@ -1129,7 +1173,6 @@ function resumeGame() {
 
 function resetGame() {
   gameState = "idle"
-  countdownActive = false
   setStatus("按空格开始")
   resetGameState()
   stopAudio()
@@ -1577,6 +1620,13 @@ function updateGame() {
   ctx.translate(shakeX, shakeY)
   drawTrack()
   drawPacman()
+  if (gameState === "ready") {
+    drawReadyScreen()
+    updateAndDrawParticles()
+    ctx.restore()
+    updateHud()
+    return
+  }
   if (gameState !== "playing") {
     updateAndDrawParticles()
     ctx.restore()
@@ -1725,11 +1775,79 @@ function renderTimelines() {
   drawTimelineBase(editorCtx, editorWidth)
   drawRecordPath(editorCtx, editorWidth)
   drawItems(editorCtx, editorWidth)
+
+  // Determine cursor position
+  let cursorMs
   if (recording || recordingPaused) {
-    const elapsed = getRecordingElapsed()
-    drawPlaybackCursor(recordCtx, elapsed)
-    drawPlaybackCursor(editorCtx, elapsed)
+    cursorMs = getRecordingElapsed()
+  } else if (editorPreviewPlaying) {
+    cursorMs = editorCursorMs + (performance.now() - editorPreviewStartTime)
+  } else {
+    cursorMs = editorCursorMs
   }
+  drawPlaybackCursor(recordCtx, cursorMs)
+  drawPlaybackCursor(editorCtx, cursorMs)
+}
+
+function timelineXToMs(canvasX) {
+  const timeMs = ((canvasX - timelinePadding) / pxPerSecond) * 1000
+  return Math.max(0, timeMs)
+}
+
+function getCanvasXFromEvent(event, canvasEl) {
+  // For mousedown/pointerdown, offsetX is reliable
+  if (event.type === "pointerdown" || event.type === "mousedown") {
+    return event.offsetX
+  }
+  // For pointermove during capture, compute from clientX
+  const container = canvasEl.parentElement
+  const containerRect = container.getBoundingClientRect()
+  return event.clientX - containerRect.left + container.scrollLeft
+}
+
+let dragSourceCanvas = null
+
+function handleTimelineCursorDown(event, canvasEl) {
+  event.preventDefault()
+  event.stopPropagation()
+  const canvasX = event.offsetX
+  const timeMs = timelineXToMs(canvasX)
+  editorCursorDragging = true
+  editorCursorMs = timeMs
+  dragSourceCanvas = canvasEl
+  canvasEl.setPointerCapture(event.pointerId)
+
+  if (recordingPaused) {
+    seekRecordingTo(timeMs)
+  } else {
+    if (editorPreviewPlaying) {
+      stopAudio()
+      editorPreviewPlaying = false
+    }
+    renderTimelines()
+  }
+}
+
+function handleTimelineCursorMove(event) {
+  if (!editorCursorDragging || !dragSourceCanvas) return
+  const canvasX = getCanvasXFromEvent(event, dragSourceCanvas)
+  const timeMs = timelineXToMs(canvasX)
+  editorCursorMs = timeMs
+
+  if (recordingPaused) {
+    seekRecordingTo(timeMs)
+  } else {
+    renderTimelines()
+  }
+}
+
+function handleTimelineCursorUp(event) {
+  if (!editorCursorDragging) return
+  editorCursorDragging = false
+  if (dragSourceCanvas && event.pointerId !== undefined) {
+    try { dragSourceCanvas.releasePointerCapture(event.pointerId) } catch (e) { }
+  }
+  dragSourceCanvas = null
 }
 
 function scrollTimelineToTime(container, timeMs) {
@@ -1800,14 +1918,26 @@ function startRecording() {
   if (recording) return
   recording = true
   recordingPaused = false
-  recordPath = []
-  recordStartTime = performance.now()
-  recordLastSample = 0
+
+  const startFromMs = editorCursorMs || 0
+  // Do NOT trim existing path — keep all data intact
+  // Recording will only append once we pass beyond the existing path's end
+  recordLastSample = startFromMs
+  recordPausedElapsed = startFromMs
   recordTotalPauseDuration = 0
   recordPauseStartTime = 0
-  recordPausedElapsed = 0
-  setStatus("录制中 (Q暂停 / Esc停止)")
-  playAudio(0)
+  // Set recordStartTime so that elapsed = startFromMs at this moment
+  recordStartTime = performance.now() - startFromMs
+
+  const pathEndMs = recordPath.length > 0
+    ? recordPath[recordPath.length - 1].time
+    : 0
+  if (startFromMs < pathEndMs) {
+    setStatus("播放中... 超过已录制部分后自动继续录制")
+  } else {
+    setStatus("录制中 (Q暂停 / Esc停止)")
+  }
+  playAudio(startFromMs)
 }
 
 function pauseRecording() {
@@ -1816,7 +1946,7 @@ function pauseRecording() {
   recordPausedElapsed = performance.now() - recordStartTime - recordTotalPauseDuration
   recordPauseStartTime = performance.now()
   stopAudio()
-  setStatus("录制暂停 (←→ 调整位置 / Q继续 / Esc停止)")
+  setStatus("暂停 (Q预览续录 / Shift+Q覆盖录制 / Esc停止)")
   renderTimelines()
   const recordContainer = recordCanvas.parentElement
   const editorContainer = editorCanvas.parentElement
@@ -1829,22 +1959,60 @@ function resumeRecording() {
   recordingPaused = false
   const thisPauseDuration = performance.now() - recordPauseStartTime
   recordTotalPauseDuration += thisPauseDuration
-  // Adjust startTime so elapsed calculation stays correct after seek
   const realElapsed = performance.now() - recordStartTime - recordTotalPauseDuration
   if (Math.abs(realElapsed - recordPausedElapsed) > 10) {
-    // User seeked during pause, adjust total pause duration to compensate
     recordTotalPauseDuration = performance.now() - recordStartTime - recordPausedElapsed
   }
-  setStatus("录制中 (Q暂停 / Esc停止)")
+  // Keep all data intact — only append past the end
+  recordLastSample = recordPausedElapsed
+  setStatus("播放中... 超过已录制部分后自动继续录制")
+  playAudio(recordPausedElapsed)
+}
+
+// Overwrite mode: trim path from cursor forward and re-record
+function startOverwriteRecording() {
+  if (recording) return
+  recording = true
+  recordingPaused = false
+
+  const startFromMs = editorCursorMs || 0
+  // Trim everything from cursor position forward
+  recordPath = recordPath.filter(p => p.time <= startFromMs)
+  recordLastSample = startFromMs
+  recordPausedElapsed = startFromMs
+  recordTotalPauseDuration = 0
+  recordPauseStartTime = 0
+  recordStartTime = performance.now() - startFromMs
+
+  setStatus("✅ 覆盖录制中 (Q暂停 / Esc停止)")
+  playAudio(startFromMs)
+}
+
+function resumeOverwriteRecording() {
+  if (!recording || !recordingPaused) return
+  recordingPaused = false
+  const thisPauseDuration = performance.now() - recordPauseStartTime
+  recordTotalPauseDuration += thisPauseDuration
+  const realElapsed = performance.now() - recordStartTime - recordTotalPauseDuration
+  if (Math.abs(realElapsed - recordPausedElapsed) > 10) {
+    recordTotalPauseDuration = performance.now() - recordStartTime - recordPausedElapsed
+  }
+  // Trim everything from cursor position forward
+  recordPath = recordPath.filter(p => p.time <= recordPausedElapsed)
+  recordLastSample = recordPausedElapsed
+  setStatus("✅ 覆盖录制中 (Q暂停 / Esc停止)")
   playAudio(recordPausedElapsed)
 }
 
 function seekRecording(deltaMs) {
   if (!recordingPaused) return
+  seekRecordingTo(recordPausedElapsed + deltaMs)
+}
+
+function seekRecordingTo(timeMs) {
   const maxMs = audioBuffer ? audioBuffer.duration * 1000 : editorDurationMs
-  recordPausedElapsed = Math.max(0, Math.min(maxMs, recordPausedElapsed + deltaMs))
-  // Trim red trail: remove recorded points beyond the new position
-  recordPath = recordPath.filter(p => p.time <= recordPausedElapsed)
+  recordPausedElapsed = Math.max(0, Math.min(maxMs, timeMs))
+  // Do NOT trim existing recordPath — only set the resume point
   recordLastSample = recordPausedElapsed
   setStatus(`录制暂停 ${(recordPausedElapsed / 1000).toFixed(1)}s (←→ 调整 / Q继续 / Esc停止)`)
   renderTimelines()
@@ -1872,17 +2040,31 @@ function updateRecording() {
     stopRecording()
     return
   }
-  if (time - recordLastSample > 40) {
-    recordPath.push({
-      time,
-      lane: pacman.targetLane
-    })
-    recordLastSample = time
-    const recordContainer = recordCanvas.parentElement
-    const editorContainer = editorCanvas.parentElement
-    scrollTimelineToTime(recordContainer, time)
-    scrollTimelineToTime(editorContainer, time)
+  // Find the end of existing recorded data
+  const pathEndMs = recordPath.length > 0
+    ? recordPath[recordPath.length - 1].time
+    : 0
+
+  if (time > pathEndMs) {
+    // We are past the existing path — actively recording
+    if (time - recordLastSample > 40) {
+      recordPath.push({
+        time,
+        lane: pacman.targetLane
+      })
+      recordLastSample = time
+    }
+    // Update status to indicate we're now recording
+    if (pathEndMs > 0 && time - pathEndMs < 100) {
+      setStatus("录制中 (Q暂停 / Esc停止)")
+    }
   }
+  // Always scroll to follow playback
+  const recordContainer = recordCanvas.parentElement
+  const editorContainer = editorCanvas.parentElement
+  scrollTimelineToTime(recordContainer, time)
+  scrollTimelineToTime(editorContainer, time)
+
   if (time > editorDurationMs - 1000) {
     editorDurationMs = time + 2000
   }
@@ -2196,14 +2378,24 @@ function bindEvents() {
   })
   startButton.addEventListener("click", () => {
     if (gameState === "paused") resumeGame()
-    else startGameWithCountdown()
+    else startGame()
   })
   pauseButton.addEventListener("click", pauseGame)
   resetButton.addEventListener("click", resetGame)
   playAudioButton.addEventListener("click", () => {
-    playAudio(0)
+    const startMs = editorCursorMs || 0
+    playAudio(startMs)
+    editorPreviewPlaying = true
+    editorPreviewStartTime = performance.now()
   })
-  stopAudioButton.addEventListener("click", stopAudio)
+  stopAudioButton.addEventListener("click", () => {
+    stopAudio()
+    if (editorPreviewPlaying) {
+      editorCursorMs = editorCursorMs + (performance.now() - editorPreviewStartTime)
+      editorPreviewPlaying = false
+      renderTimelines()
+    }
+  })
   primaryStart.addEventListener("click", () => showView("gameSetupView"))
   primaryEditor.addEventListener("click", () => showView("editorView"))
   openEditorFromSetup.addEventListener("click", () => showView("editorView"))
@@ -2212,7 +2404,7 @@ function bindEvents() {
     playingTitle.textContent = currentSong.name
     playingMeta.textContent = `${currentSong.bpm} BPM · ${Math.round(currentSong.durationMs / 1000)}s`
     showView("gameView")
-    startGameWithCountdown()
+    enterReadyState()
   })
   saveSongButton.addEventListener("click", saveSongFromEditor)
   loadSongButton.addEventListener("click", () => loadSongToEditor(songSelect.value))
@@ -2222,10 +2414,72 @@ function bindEvents() {
     button.addEventListener("click", () => showView(button.dataset.view))
   })
   editorCanvas.addEventListener("click", handleEditorClick)
+  // Draggable cursor on record timeline
+  recordCanvas.addEventListener("pointerdown", (event) => {
+    handleTimelineCursorDown(event, recordCanvas)
+  })
+  recordCanvas.addEventListener("pointermove", handleTimelineCursorMove)
+  recordCanvas.addEventListener("pointerup", handleTimelineCursorUp)
+  // Draggable cursor on editor timeline (Ctrl+click to avoid conflict with item placement)
+  editorCanvas.addEventListener("pointerdown", (event) => {
+    if (event.ctrlKey || event.metaKey) {
+      handleTimelineCursorDown(event, editorCanvas)
+    }
+  })
+  editorCanvas.addEventListener("pointermove", handleTimelineCursorMove)
+  editorCanvas.addEventListener("pointerup", handleTimelineCursorUp)
   audioInput.addEventListener("change", handleAudioInput)
-  gestureStartToggle.addEventListener("change", () => {
+  gestureStartToggle.addEventListener("change", async () => {
     gestureStartEnabled = gestureStartToggle.checked
-    poseStatus.textContent = gestureStartEnabled ? "手势：待机" : "手势：关闭"
+    if (gestureStartEnabled) {
+      poseStatus.textContent = "正在请求摄像头权限..."
+      console.log("[Camera] 手势开关打开，请求摄像头...")
+      try {
+        // Step 1: Request camera permission first (this triggers the browser prompt)
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true })
+        // Got permission — stop temp stream immediately
+        tempStream.getTracks().forEach(t => t.stop())
+        console.log("[Camera] 权限已获取")
+
+        // Step 2: Now enumerate with full device info (labels + IDs)
+        await enumerateCameras()
+        console.log("[Camera] 设备列表:", cameraSelect.options.length, "个摄像头")
+
+        // Step 3: Start with selected (or first) camera
+        if (cameraSelect.value) {
+          poseStatus.textContent = "正在启动摄像头..."
+          await startPoseCamera(cameraSelect.value)
+        } else {
+          // Fallback: try without specific device
+          poseStatus.textContent = "正在启动摄像头..."
+          await startPoseCamera(null)
+        }
+      } catch (error) {
+        console.error("[Camera] 启动失败:", error)
+        if (error.name === "NotAllowedError") {
+          poseStatus.textContent = "⚠ 摄像头权限被拒绝，请点击地址栏🔒图标允许"
+        } else if (error.name === "NotFoundError") {
+          poseStatus.textContent = "未找到摄像头设备"
+        } else if (error.name === "NotReadableError") {
+          poseStatus.textContent = "摄像头被其他程序占用"
+        } else {
+          poseStatus.textContent = "摄像头错误: " + error.message
+        }
+        gestureStartToggle.checked = false
+        gestureStartEnabled = false
+      }
+    } else {
+      poseStatus.textContent = "手势：关闭"
+      console.log("[Camera] 手势开关关闭，释放摄像头")
+      if (poseStream) {
+        poseStream.getTracks().forEach((track) => track.stop())
+        poseStream = null
+      }
+      if (poseCamera) {
+        poseCamera.stop()
+        poseCamera = null
+      }
+    }
   })
   poseCanvas.addEventListener("pointerdown", (event) => {
     const rect = poseCanvas.getBoundingClientRect()
@@ -2256,7 +2510,7 @@ function bindEvents() {
   })
   restartButton.addEventListener("click", () => {
     clearGameOver()
-    startGameWithCountdown()
+    enterReadyState()
   })
   backToEditorButton.addEventListener("click", () => {
     clearGameOver()
@@ -2282,8 +2536,8 @@ function bindEvents() {
         event.preventDefault()
         if (gameState === "playing") pauseGame()
         else if (gameState === "paused") resumeGame()
-        else if (gameState === "countdown") return
-        else startGameWithCountdown()
+        else if (gameState === "ready") launchFromReady()
+        else enterReadyState()
         return
       }
       if (["w", "s", "x"].includes(key)) {
@@ -2294,9 +2548,17 @@ function bindEvents() {
     }
     if (activeViewId === "editorView") {
       if (key === "q" && !event.repeat) {
-        if (!recording) startRecording()
-        else if (recordingPaused) resumeRecording()
-        else pauseRecording()
+        if (event.shiftKey) {
+          // Shift+Q = overwrite mode
+          if (!recording) startOverwriteRecording()
+          else if (recordingPaused) resumeOverwriteRecording()
+          else pauseRecording()
+        } else {
+          // Q = safe mode (preview + append)
+          if (!recording) startRecording()
+          else if (recordingPaused) resumeRecording()
+          else pauseRecording()
+        }
         return
       }
       if (key === "escape" && recording) {
@@ -2371,6 +2633,16 @@ function loop() {
     updateRecordingTrail()
   } else if (recordingPaused) {
     renderTimelines()
+  } else if (editorPreviewPlaying) {
+    // Update cursor during preview playback
+    const elapsed = editorCursorMs + (performance.now() - editorPreviewStartTime)
+    const maxMs = audioBuffer ? audioBuffer.duration * 1000 : editorDurationMs
+    if (elapsed >= maxMs) {
+      editorCursorMs = maxMs
+      editorPreviewPlaying = false
+      stopAudio()
+    }
+    renderTimelines()
   }
   requestAnimationFrame(loop)
 }
@@ -2392,11 +2664,9 @@ async function init() {
   gestureStartEnabled = gestureStartToggle.checked
   poseStatus.textContent = gestureStartEnabled ? "手势：待机" : "手势：关闭"
   bpmStatus.textContent = editorAudioDataUrl ? "BPM 计算中..." : "等待音频"
-  enumerateCameras().then(() => {
-    if (cameraSelect.value) {
-      startPoseCamera(cameraSelect.value)
-    }
-  })
+  // Only enumerate cameras (populate dropdown), don't auto-start
+  // Camera will start when user enables the gesture toggle
+  enumerateCameras()
   if (navigator.mediaDevices?.addEventListener) {
     navigator.mediaDevices.addEventListener("devicechange", enumerateCameras)
   }
