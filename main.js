@@ -61,6 +61,7 @@ const powerDuration = 10000
 const storageKey = "poserhythmSongs"
 const dbName = "pac-rhythm-db"
 const storeName = "songs"
+const metaStoreName = "songMeta"
 const isFileProtocol = location.protocol === "file:"
 const timelinePadding = 70
 const timelineLaneHeight = 60
@@ -455,11 +456,14 @@ function getAudioContext() {
 function openDb() {
   if (dbPromise) return dbPromise
   dbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(dbName, 1)
+    const request = indexedDB.open(dbName, 2)
     request.onupgradeneeded = () => {
       const db = request.result
       if (!db.objectStoreNames.contains(storeName)) {
         db.createObjectStore(storeName, { keyPath: "id" })
+      }
+      if (!db.objectStoreNames.contains(metaStoreName)) {
+        db.createObjectStore(metaStoreName, { keyPath: "id" })
       }
     }
     request.onsuccess = () => resolve(request.result)
@@ -486,6 +490,39 @@ async function putSong(song) {
     const store = transaction.objectStore(storeName)
     const request = store.put(song)
     request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function putSongMeta(songId, meta) {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(metaStoreName, "readwrite")
+    const store = transaction.objectStore(metaStoreName)
+    const request = store.put({ id: songId, ...meta })
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function getSongMeta(songId) {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(metaStoreName, "readonly")
+    const store = transaction.objectStore(metaStoreName)
+    const request = store.get(songId)
+    request.onsuccess = () => resolve(request.result || null)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function getAllSongMeta() {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(metaStoreName, "readonly")
+    const store = transaction.objectStore(metaStoreName)
+    const request = store.getAll()
+    request.onsuccess = () => resolve(request.result || [])
     request.onerror = () => reject(request.error)
   })
 }
@@ -562,6 +599,9 @@ async function loadFolderPacks() {
         folderSongs.push({
           id: `folder:${pack.folder}`,
           name: chart.name || pack.folder,
+          artist: chart.artist || "",
+          album: chart.album || "",
+          coverDataUrl: chart.cover ? `songs/${pack.folder}/${chart.cover}` : null,
           bpm: chart.bpm || 120,
           durationMs: chart.durationMs || 30000,
           items: Array.isArray(chart.items) ? chart.items : [],
@@ -2149,6 +2189,25 @@ async function loadSongs() {
   }
   console.log(`[加载] 总计: ${songs.length} 首曲目`)
   await saveSongs()
+
+  // Merge saved metadata overrides (artist, album, cover) onto all songs
+  try {
+    const allMeta = await getAllSongMeta()
+    if (allMeta.length > 0) {
+      const metaMap = new Map(allMeta.map(m => [m.id, m]))
+      songs.forEach(song => {
+        const meta = metaMap.get(song.id)
+        if (meta) {
+          if (meta.artist) song.artist = meta.artist
+          if (meta.album) song.album = meta.album
+          if (meta.coverDataUrl) song.coverDataUrl = meta.coverDataUrl
+        }
+      })
+      console.log(`[加载] 已合并 ${allMeta.length} 条元数据`)
+    }
+  } catch (e) {
+    console.warn("[加载] 元数据合并失败:", e)
+  }
 }
 
 function renderSongList() {
@@ -2157,18 +2216,60 @@ function renderSongList() {
     const card = document.createElement("div")
     card.className = "song-card"
     if (song.id === selectedSongId) card.classList.add("selected")
+
+    // Cover art
+    const cover = document.createElement("div")
+    cover.className = "song-cover"
+    if (song.coverDataUrl) {
+      const img = document.createElement("img")
+      img.src = song.coverDataUrl
+      img.alt = song.name
+      cover.appendChild(img)
+    } else {
+      cover.textContent = "🎵"
+    }
+    card.appendChild(cover)
+
+    // Info column
+    const info = document.createElement("div")
+    info.className = "song-info"
+
     const title = document.createElement("div")
     title.className = "song-title"
     const isFolder = song.source === "folder"
     title.textContent = (isFolder ? "📁 " : "") + song.name
+    info.appendChild(title)
+
+    if (song.artist) {
+      const artist = document.createElement("div")
+      artist.className = "song-artist"
+      artist.textContent = song.artist + (song.album ? " · " + song.album : "")
+      info.appendChild(artist)
+    }
+
     const meta = document.createElement("div")
     meta.className = "song-meta"
     const duration = Math.round((song.durationMs || 0) / 1000)
     meta.textContent = `${song.bpm} BPM · ${duration}s` + (isFolder ? " · 文件夹曲谱包" : "")
-    card.appendChild(title)
-    card.appendChild(meta)
+    info.appendChild(meta)
+
+    card.appendChild(info)
+
+    // Actions
     const actionRow = document.createElement("div")
     actionRow.className = "song-actions"
+
+    // Edit metadata button (always available)
+    const editBtn = document.createElement("button")
+    editBtn.className = "outlined-button"
+    editBtn.textContent = "✎"
+    editBtn.title = "编辑信息"
+    editBtn.addEventListener("click", (event) => {
+      event.stopPropagation()
+      openSongMetaModal(song.id)
+    })
+    actionRow.appendChild(editBtn)
+
     if (!isFolder) {
       const exportButton = document.createElement("button")
       exportButton.className = "outlined-button"
@@ -2188,12 +2289,131 @@ function renderSongList() {
       actionRow.appendChild(deleteButton)
     }
     card.appendChild(actionRow)
+
     card.addEventListener("click", () => {
       selectedSongId = song.id
       updateSelectedSong()
       renderSongList()
     })
     songList.appendChild(card)
+  })
+}
+
+function openSongMetaModal(songId) {
+  const song = songs.find(s => s.id === songId)
+  if (!song) return
+
+  // Remove existing modal if any
+  const existing = document.querySelector(".modal-backdrop")
+  if (existing) existing.remove()
+
+  const backdrop = document.createElement("div")
+  backdrop.className = "modal-backdrop"
+
+  const modal = document.createElement("div")
+  modal.className = "modal-card"
+
+  let coverPreviewUrl = song.coverDataUrl || ""
+
+  modal.innerHTML = `
+    <div class="modal-title">编辑曲目信息</div>
+    <div class="modal-field">
+      <label>曲目名称</label>
+      <input type="text" id="metaName" value="${(song.name || '').replace(/"/g, '&quot;')}" />
+    </div>
+    <div class="modal-field">
+      <label>歌手 / 艺术家</label>
+      <input type="text" id="metaArtist" value="${(song.artist || '').replace(/"/g, '&quot;')}" placeholder="例如: Daft Punk" />
+    </div>
+    <div class="modal-field">
+      <label>专辑</label>
+      <input type="text" id="metaAlbum" value="${(song.album || '').replace(/"/g, '&quot;')}" placeholder="例如: Discovery" />
+    </div>
+    <div class="modal-field">
+      <label>封面</label>
+      <div class="modal-cover-upload">
+        <div class="modal-cover-preview" id="metaCoverPreview">
+          ${coverPreviewUrl ? `<img src="${coverPreviewUrl}" />` : "🎵"}
+        </div>
+        <div>
+          <button class="outlined-button" id="metaCoverBtn">选择图片</button>
+          <input type="file" id="metaCoverInput" accept="image/*" style="display:none" />
+          ${coverPreviewUrl ? '<button class="text-button" id="metaCoverClear">移除封面</button>' : ''}
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="text-button" id="metaCancel">取消</button>
+      <button class="filled-button" id="metaSave">保存</button>
+    </div>
+  `
+
+  backdrop.appendChild(modal)
+  document.body.appendChild(backdrop)
+
+  // Wire up cover upload
+  const coverInput = modal.querySelector("#metaCoverInput")
+  const coverBtn = modal.querySelector("#metaCoverBtn")
+  const coverPreview = modal.querySelector("#metaCoverPreview")
+  const clearBtn = modal.querySelector("#metaCoverClear")
+
+  coverBtn.addEventListener("click", () => coverInput.click())
+  coverPreview.addEventListener("click", () => coverInput.click())
+
+  coverInput.addEventListener("change", () => {
+    const file = coverInput.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      // Resize to 256px for storage efficiency
+      const img = new Image()
+      img.onload = () => {
+        const size = 256
+        const c = document.createElement("canvas")
+        c.width = size
+        c.height = size
+        const cx = c.getContext("2d")
+        // Center crop
+        const min = Math.min(img.width, img.height)
+        const sx = (img.width - min) / 2
+        const sy = (img.height - min) / 2
+        cx.drawImage(img, sx, sy, min, min, 0, 0, size, size)
+        coverPreviewUrl = c.toDataURL("image/jpeg", 0.8)
+        coverPreview.innerHTML = `<img src="${coverPreviewUrl}" />`
+      }
+      img.src = reader.result
+    }
+    reader.readAsDataURL(file)
+  })
+
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      coverPreviewUrl = ""
+      coverPreview.innerHTML = "🎵"
+    })
+  }
+
+  // Cancel
+  modal.querySelector("#metaCancel").addEventListener("click", () => backdrop.remove())
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove() })
+
+  // Save
+  modal.querySelector("#metaSave").addEventListener("click", async () => {
+    song.name = modal.querySelector("#metaName").value.trim() || "未命名曲目"
+    song.artist = modal.querySelector("#metaArtist").value.trim()
+    song.album = modal.querySelector("#metaAlbum").value.trim()
+    song.coverDataUrl = coverPreviewUrl || null
+    // Save metadata override to dedicated store (works for all song types incl. folder packs)
+    await putSongMeta(song.id, {
+      artist: song.artist,
+      album: song.album,
+      coverDataUrl: song.coverDataUrl
+    })
+    await saveSongs()
+    renderSongList()
+    renderSongSelect()
+    updateSelectedSong()
+    backdrop.remove()
   })
 }
 
@@ -2217,7 +2437,9 @@ function updateSelectedSong() {
     return
   }
   selectedSongTitle.textContent = song.name
-  selectedSongMeta.textContent = `${song.bpm} BPM · ${Math.round(song.durationMs / 1000)}s`
+  const parts = [`${song.bpm} BPM`, `${Math.round(song.durationMs / 1000)}s`]
+  if (song.artist) parts.unshift(song.artist)
+  selectedSongMeta.textContent = parts.join(" · ")
   launchGameButton.disabled = false
   currentSong = song
   setAudioMeta(song.audioName, song.audioDataUrl)
@@ -2258,9 +2480,14 @@ function saveSongFromEditor() {
   const name = songNameInput.value.trim() || "未命名曲目"
   updateEditorDuration()
   editorItems.sort((a, b) => a.time - b.time)
+  // Preserve existing metadata (artist, album, cover) if editing an existing song
+  const existingSong = songs.find(s => s.id === editorSongId)
   const nowSong = {
     id: editorSongId || String(Date.now()),
     name,
+    artist: existingSong?.artist || "",
+    album: existingSong?.album || "",
+    coverDataUrl: existingSong?.coverDataUrl || null,
     bpm,
     durationMs: editorDurationMs,
     items: editorItems,
@@ -2311,10 +2538,23 @@ async function exportSongAsZip(songId) {
   const folder = zip.folder(folderName)
   const chart = {
     name: song.name,
+    artist: song.artist || "",
+    album: song.album || "",
     bpm: song.bpm,
     durationMs: song.durationMs,
     items: song.items || [],
     recordPath: song.recordPath || []
+  }
+  // Include cover image
+  if (song.coverDataUrl && song.coverDataUrl.startsWith("data:")) {
+    chart.cover = "cover.jpg"
+    const coverBase64 = song.coverDataUrl.split(",")[1]
+    const coverBinary = atob(coverBase64)
+    const coverBytes = new Uint8Array(coverBinary.length)
+    for (let i = 0; i < coverBinary.length; i++) {
+      coverBytes[i] = coverBinary.charCodeAt(i)
+    }
+    folder.file("cover.jpg", coverBytes)
   }
   folder.file("chart.json", JSON.stringify(chart, null, 2))
   let audioFileName = ""
@@ -2517,17 +2757,7 @@ function bindEvents() {
     resetGame()
     showView("editorView")
   })
-  refreshCameraButton.addEventListener("click", async () => {
-    await enumerateCameras()
-    if (cameraSelect.value) {
-      startPoseCamera(cameraSelect.value)
-    }
-  })
-  cameraSelect.addEventListener("change", () => {
-    if (cameraSelect.value) {
-      startPoseCamera(cameraSelect.value)
-    }
-  })
+  // Camera is fully managed by the gesture toggle — no separate refresh/select handlers needed
   window.addEventListener("keydown", (event) => {
     const key = event.key.toLowerCase()
     if (activeViewId === "gameView") {
