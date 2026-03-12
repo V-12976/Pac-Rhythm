@@ -48,8 +48,9 @@ const restartButton = document.getElementById("restartButton")
 const backToEditorButton = document.getElementById("backToEditorButton")
 const difficultySelect = document.getElementById("difficultySelect")
 const autoGenerateButton = document.getElementById("autoGenerateButton")
+const laneCountSelect = document.getElementById("laneCountSelect")
 
-const lanes = 3
+let lanes = 3  // 默认为3轨道，可被歌曲数据覆盖
 const pacmanX = 160
 const laneHeight = 100
 const pacmanRadius = 26
@@ -143,11 +144,54 @@ let screenShake = 0
 let screenShakeIntensity = 0
 
 function laneToY(lane) {
-  return 60 + lane * laneHeight
+  // 居中分布轨道
+  // 2轨道: 轨道0在上方，轨道1在下方
+  // 3轨道: 保持原有分布
+  const startY = 60
+  if (lanes === 2) {
+    // 二轨道：上(0) 下(1)，各占一半区域
+    // 画布高度约360，起始60，可用约240
+    // 轨道0: 60 + 60 = 120 (偏上)
+    // 轨道1: 60 + 180 = 240 (偏下)
+    return startY + 60 + lane * 120
+  } else {
+    // 三轨道：保持原有
+    return startY + lane * laneHeight
+  }
 }
 
 function timelineLaneY(lane) {
+  if (lanes === 2) {
+    // 二轨道时间轴：两个轨道位置
+    return timelineTop + lane * (timelineLaneHeight * 1.5)
+  }
   return timelineTop + lane * timelineLaneHeight
+}
+
+function setLaneCount(count) {
+  lanes = Math.max(2, Math.min(3, count))
+  // 更新吃豆人位置（如果超出新轨道范围）
+  pacman.targetLane = Math.min(pacman.targetLane, lanes - 1)
+  pacman.lane = Math.min(pacman.lane, lanes - 1)
+  pacman.y = laneToY(pacman.lane)
+  // 过滤编辑器中超出新轨道范围的物品
+  editorItems = editorItems.filter(item => item.lane < lanes)
+  // 更新提示文字
+  updateLaneHint()
+  // 重新渲染
+  refreshChartArea()
+  renderTimelines()
+}
+
+function updateLaneHint() {
+  const hint = document.querySelector('.panel-footer .hint')
+  if (hint) {
+    if (lanes === 2) {
+      hint.textContent = "W 上轨道 / X 下轨道（相邻移动）"
+    } else {
+      hint.textContent = "W 上轨道 / S 中轨道 / X 下轨道（相邻移动）"
+    }
+  }
 }
 
 function setStatus(text) {
@@ -288,7 +332,7 @@ async function startPoseCamera(deviceId) {
   }
 }
 
-// 轨道判定：手腕相对肩/髋的位置决定上/中/下
+// 轨道判定：手腕相对肩/髋的位置决定上/中/下（或上/下）
 function determinePoseLane(landmarks) {
   const leftWrist = landmarks[15]
   const rightWrist = landmarks[16]
@@ -303,9 +347,16 @@ function determinePoseLane(landmarks) {
     return null
   }
   const wristY = (leftWrist.y + rightWrist.y) * 0.5
-  if (wristY < poseLineTop) return 0
-  if (wristY > poseLineBottom) return 2
-  return 1
+  if (lanes === 2) {
+    // 二轨道：只有一条分界线（使用 poseLineTop 作为分界线）
+    // 手腕在分界线上方 → 上轨道(0)，下方 → 下轨道(1)
+    return wristY < poseLineTop ? 0 : 1
+  } else {
+    // 三轨道：保持原有逻辑
+    if (wristY < poseLineTop) return 0
+    if (wristY > poseLineBottom) return 2
+    return 1
+  }
 }
 
 function applyPoseLane(lane) {
@@ -379,12 +430,14 @@ function updateGestureStart(landmarks) {
 function clampPoseLines() {
   poseLineTop = Math.max(0.1, Math.min(0.9, poseLineTop))
   poseLineBottom = Math.max(0.1, Math.min(0.9, poseLineBottom))
-  if (poseLineBottom - poseLineTop < 0.1) {
+  if (lanes === 3 && poseLineBottom - poseLineTop < 0.1) {
     poseLineBottom = poseLineTop + 0.1
   }
   if (poseLineBottom > 0.95) {
     poseLineBottom = 0.95
-    poseLineTop = Math.min(poseLineTop, 0.85)
+    if (lanes === 3) {
+      poseLineTop = Math.min(poseLineTop, 0.85)
+    }
   }
 }
 
@@ -392,23 +445,37 @@ function updatePoseLineByPointer(event) {
   const rect = poseCanvas.getBoundingClientRect()
   const y = (event.clientY - rect.top) / rect.height
   if (poseDragging === "top") {
-    poseLineTop = Math.min(y, poseLineBottom - 0.1)
-  } else if (poseDragging === "bottom") {
+    if (lanes === 2) {
+      // 二轨道：只调整分界线位置
+      poseLineTop = Math.max(0.1, Math.min(0.9, y))
+    } else {
+      poseLineTop = Math.min(y, poseLineBottom - 0.1)
+    }
+  } else if (poseDragging === "bottom" && lanes === 3) {
+    // 三轨道：调整 bottom 线
     poseLineBottom = Math.max(y, poseLineTop + 0.1)
   }
   clampPoseLines()
 }
 
 function drawPoseLines(poseCtx, width, height) {
-  const topY = poseLineTop * height
-  const bottomY = poseLineBottom * height
   poseCtx.strokeStyle = "rgba(255, 255, 255, 0.6)"
   poseCtx.lineWidth = 2
   poseCtx.beginPath()
-  poseCtx.moveTo(0, topY)
-  poseCtx.lineTo(width, topY)
-  poseCtx.moveTo(0, bottomY)
-  poseCtx.lineTo(width, bottomY)
+  if (lanes === 2) {
+    // 二轨道：只画一条分界线（中间）
+    const midY = poseLineTop * height
+    poseCtx.moveTo(0, midY)
+    poseCtx.lineTo(width, midY)
+  } else {
+    // 三轨道：画两条分界线
+    const topY = poseLineTop * height
+    const bottomY = poseLineBottom * height
+    poseCtx.moveTo(0, topY)
+    poseCtx.lineTo(width, topY)
+    poseCtx.moveTo(0, bottomY)
+    poseCtx.lineTo(width, bottomY)
+  }
   poseCtx.stroke()
 }
 
@@ -599,6 +666,7 @@ async function loadFolderPacks() {
         folderSongs.push({
           id: `folder:${pack.folder}`,
           name: chart.name || pack.folder,
+          lanes: chart.lanes || 3,  // 添加轨道数，默认3
           artist: chart.artist || "",
           album: chart.album || "",
           coverDataUrl: chart.cover ? `songs/${pack.folder}/${chart.cover}` : null,
@@ -944,11 +1012,18 @@ function generateItemsFromBeats(quantized, difficulty, durationMs) {
 
   // Assign lanes using musical patterns
   const items = []
-  let currentLane = 1 // start in middle
+  let currentLane = lanes === 2 ? 0 : 1 // 二轨道从上方开始，三轨道从中间开始
   let patternIndex = 0
 
-  // Lane pattern generators
-  const patterns = [
+  // Lane pattern generators - 根据轨道数选择不同模式
+  const patterns = lanes === 2 ? [
+    // 二轨道模式
+    (i) => i % 2,  // 交替: 0,1,0,1
+    (i) => [0,0,1,1][i % 4],  // 双拍交替
+    (i) => i % 4 < 2 ? 0 : 1,  // 两上两下
+    (i) => [0,1,1,0][i % 4],  // 镜像交替
+  ] : [
+    // 三轨道模式（原有）
     // zigzag: 0,1,2,1,0,1,2...
     (i) => [0, 1, 2, 1][i % 4],
     // sweep up: 0,1,2,2,1,0
@@ -1126,7 +1201,7 @@ function moveLaneBy(key) {
   if (gameState !== "playing" && gameState !== "paused" && !recording) return
   if (key === "w") pacman.targetLane = clampLane(pacman.targetLane - 1)
   if (key === "x") pacman.targetLane = clampLane(pacman.targetLane + 1)
-  if (key === "s") pacman.targetLane = 1
+  if (key === "s" && lanes === 3) pacman.targetLane = 1  // S键只在三轨道时跳转到中间
 }
 
 function resetGameState() {
@@ -1136,9 +1211,11 @@ function resetGameState() {
   lives = maxLives
   invincibleUntil = 0
   powerUntil = 0
-  pacman.lane = 1
-  pacman.targetLane = 1
-  pacman.y = laneToY(1)
+  // 根据轨道数设置初始位置：二轨道从上方(0)开始，三轨道从中间(1)开始
+  const startLane = lanes === 2 ? 0 : 1
+  pacman.lane = startLane
+  pacman.targetLane = startLane
+  pacman.y = laneToY(startLane)
   particles.length = 0
   shockwaves.length = 0
   comboPopups.length = 0
@@ -1228,7 +1305,7 @@ function drawTrack() {
   const wallColor = "#2121DE" // classic Pac-Man blue
   const wallHighlight = "#4242FF"
   const laneTop = laneToY(0) - laneHeight / 2
-  const laneBottom = laneToY(2) + laneHeight / 2
+  const laneBottom = laneToY(lanes - 1) + laneHeight / 2  // 根据实际轨道数计算底部
 
   // Outer walls
   ctx.strokeStyle = wallColor
@@ -2453,10 +2530,13 @@ function loadSongToEditor(songId) {
   beatMs = 60000 / bpm
   bpmInput.value = String(bpm)
   songNameInput.value = song.name
+  lanes = song.lanes || 3  // 默认为3轨道（兼容旧数据）
+  laneCountSelect.value = String(lanes)
   editorItems = Array.isArray(song.items) ? song.items : []
   recordPath = Array.isArray(song.recordPath) ? song.recordPath : []
   editorDurationMs = song.durationMs || editorDurationMs
   setAudioMeta(song.audioName, song.audioDataUrl)
+  updateLaneHint()
   refreshChartArea()
   renderTimelines()
 }
@@ -2466,12 +2546,15 @@ function createNewSong() {
   bpm = 120
   beatMs = 60000 / bpm
   bpmInput.value = String(bpm)
+  lanes = 3  // 新建歌曲默认为3轨道
+  laneCountSelect.value = "3"
   songNameInput.value = ""
   editorItems = []
   recordPath = []
   editorDurationMs = 30000
   audioBuffer = null
   setAudioMeta("未选择音频", null)
+  updateLaneHint()
   refreshChartArea()
   renderTimelines()
 }
@@ -2485,6 +2568,7 @@ function saveSongFromEditor() {
   const nowSong = {
     id: editorSongId || String(Date.now()),
     name,
+    lanes,  // 添加轨道数
     artist: existingSong?.artist || "",
     album: existingSong?.album || "",
     coverDataUrl: existingSong?.coverDataUrl || null,
@@ -2538,6 +2622,7 @@ async function exportSongAsZip(songId) {
   const folder = zip.folder(folderName)
   const chart = {
     name: song.name,
+    lanes: song.lanes || 3,  // 添加轨道数
     artist: song.artist || "",
     album: song.album || "",
     bpm: song.bpm,
@@ -2616,6 +2701,9 @@ function bindEvents() {
     beatMs = 60000 / bpm
     refreshChartArea()
   })
+  laneCountSelect.addEventListener("change", () => {
+    setLaneCount(Number(laneCountSelect.value))
+  })
   startButton.addEventListener("click", () => {
     if (gameState === "paused") resumeGame()
     else startGame()
@@ -2643,6 +2731,8 @@ function bindEvents() {
     if (!currentSong) return
     playingTitle.textContent = currentSong.name
     playingMeta.textContent = `${currentSong.bpm} BPM · ${Math.round(currentSong.durationMs / 1000)}s`
+    // 加载歌曲的轨道数
+    lanes = currentSong.lanes || 3
     showView("gameView")
     enterReadyState()
   })
@@ -2890,6 +2980,7 @@ async function init() {
   bindEvents()
   setTool("pellet")
   resetGameState()
+  updateLaneHint()  // 初始化提示文字
   showView("homeView")
   gestureStartEnabled = gestureStartToggle.checked
   poseStatus.textContent = gestureStartEnabled ? "手势：待机" : "手势：关闭"
